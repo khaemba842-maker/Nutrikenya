@@ -30,18 +30,29 @@ const QS=[
 
 function clamp(v,lo,hi){return Math.max(lo,Math.min(v,hi));}
 
-function calcTargets(pr){
+function calcMaintenance(pr){
   var weight=clamp(pr.weight,20,300),height=clamp(pr.height,50,250),age=clamp(pr.age,10,100);
   var act=Math.max(0,Math.min(parseInt(pr.activity)||2,4));
   var bmr=pr.sex==='male'?10*weight+6.25*height-5*age+5:10*weight+6.25*height-5*age-161;
-  var cal=bmr*[1.2,1.375,1.55,1.725,1.9][act];
-  if(pr.goal==='lose') cal-=pr.speed==='slow'?250:pr.speed==='aggressive'?750:500;
-  if(pr.goal==='gain') cal+=pr.speed==='slow'?200:pr.speed==='aggressive'?600:400;
-  cal=Math.max(cal,1200);
+  return bmr*[1.2,1.375,1.55,1.725,1.9][act];
+}
+
+function macrosFor(pr,cal){
+  var weight=clamp(pr.weight,20,300);
   var protein=Math.round(weight*(pr.goal==='gain'?2.2:1.8));
   var fat=Math.round(cal*0.25/9);
   var carbs=Math.round(Math.max((cal-protein*4-fat*9)/4,0));
-  return{calories:Math.round(cal),protein:protein,carbs:carbs,fat:fat,water:Math.round(weight*33)};
+  return{protein:protein,carbs:carbs,fat:fat};
+}
+
+function calcTargets(pr){
+  var weight=clamp(pr.weight,20,300);
+  var cal=calcMaintenance(pr);
+  if(pr.goal==='lose') cal-=pr.speed==='slow'?250:pr.speed==='aggressive'?750:500;
+  if(pr.goal==='gain') cal+=pr.speed==='slow'?200:pr.speed==='aggressive'?600:400;
+  cal=Math.max(cal,1200);
+  var m=macrosFor(pr,cal);
+  return{calories:Math.round(cal),protein:m.protein,carbs:m.carbs,fat:m.fat,water:Math.round(weight*33)};
 }
 
 function today(){return new Date().toISOString().split('T')[0];}
@@ -148,6 +159,7 @@ function Auth(props){
 
   async function handleAuth(){
     if(!email||!password){alert('Please fill in all fields.');return;}
+    if(mode==='signup'&&password.length<8){alert('Password must be at least 8 characters.');return;}
     setLoading(true);
     try{
       if(mode==='login'){
@@ -483,10 +495,11 @@ function Scan(props){
 
 // ── METRICS ───────────────────────────────────────────────
 function Metrics(props){
-  var profile=props.profile,metrics=props.metrics,setMetrics=props.setMetrics,score=props.score,lang=props.lang,showToast=props.showToast,userId=props.userId;
+  var profile=props.profile,metrics=props.metrics,setMetrics=props.setMetrics,score=props.score,lang=props.lang,showToast=props.showToast,userId=props.userId,targets=props.targets,setTargets=props.setTargets;
   var [form,setForm]=useState(false);
   var [nw,setNw]=useState('');
   var [meas,setMeas]=useState({waist:'',chest:'',hips:'',neck:''});
+  var [recal,setRecal]=useState(null);
   var sw=lang==='sw';
   async function save(){
     if(!nw)return;
@@ -494,6 +507,40 @@ function Metrics(props){
     setMetrics(function(m){return m.concat([entry]);});showToast('Metrics saved');
     if(userId){await supabase.from('body_metrics').insert({user_id:userId,date:today(),weight:parseFloat(nw)||null,waist:parseFloat(meas.waist)||null,chest:parseFloat(meas.chest)||null,hips:parseFloat(meas.hips)||null,neck:parseFloat(meas.neck)||null});}
     setNw('');setMeas({waist:'',chest:'',hips:'',neck:''});setForm(false);
+  }
+  var targetCalories=targets?targets.calories:null;
+  useEffect(function(){
+    if(!userId||!profile||!targetCalories)return;
+    var cutoff=new Date();cutoff.setUTCDate(cutoff.getUTCDate()-28);
+    var cutoffStr=cutoff.toISOString().split('T')[0];
+    Promise.all([
+      supabase.from('food_logs').select('date,calories').eq('user_id',userId).gte('date',cutoffStr),
+      supabase.from('body_metrics').select('date,weight').eq('user_id',userId).gte('date',cutoffStr).order('date',{ascending:true})
+    ]).then(function(results){
+      var logs=(results[0].data||[]),weights=(results[1].data||[]).filter(function(w){return w.weight;});
+      var byDate={};
+      logs.forEach(function(r){byDate[r.date]=(byDate[r.date]||0)+Number(r.calories||0);});
+      var loggedDates=Object.keys(byDate);
+      if(loggedDates.length<7||weights.length<2){setRecal(null);return;}
+      var firstW=weights[0],lastW=weights[weights.length-1];
+      var days=(new Date(lastW.date)-new Date(firstW.date))/86400000;
+      if(days<7){setRecal(null);return;}
+      var deltaWeight=Number(lastW.weight)-Number(firstW.weight);
+      var avgIntake=loggedDates.reduce(function(a,d){return a+byDate[d];},0)/loggedDates.length;
+      var actualMaintenance=Math.round(avgIntake-(deltaWeight*7700)/days);
+      var assumedMaintenance=Math.round(calcMaintenance(profile));
+      var goalOffset=targets.calories-assumedMaintenance;
+      var suggestedCalories=Math.max(1200,Math.round(actualMaintenance+goalOffset));
+      if(Math.abs(suggestedCalories-targets.calories)<75){setRecal(null);return;}
+      setRecal({assumedMaintenance:assumedMaintenance,actualMaintenance:actualMaintenance,suggestedCalories:suggestedCalories,days:Math.round(days),loggedDays:loggedDates.length});
+    });
+  },[userId,profile,targetCalories]);
+  async function applyRecal(){
+    var m=macrosFor(profile,recal.suggestedCalories);
+    var newTargets={calories:recal.suggestedCalories,protein:m.protein,carbs:m.carbs,fat:m.fat,water:targets.water};
+    setTargets(newTargets);
+    if(userId){await supabase.from('profiles').update({calories:newTargets.calories,protein:newTargets.protein,carbs:newTargets.carbs,fat:newTargets.fat}).eq('id',userId);}
+    showToast('Targets updated');setRecal(null);
   }
   var latest=metrics.length>0?metrics[metrics.length-1]:null;
   var change=metrics.length>1?(parseFloat(metrics[metrics.length-1].weight)-parseFloat(metrics[0].weight)).toFixed(1):null;
@@ -503,6 +550,15 @@ function Metrics(props){
   return(
     <div className="page" style={{padding:'24px 20px 100px',fontFamily:FF}}>
       <div style={{fontSize:24,fontWeight:800,color:W,letterSpacing:'-0.03em',marginBottom:20}}>{sw?'Vipimo vya Mwili':'Body Metrics'}</div>
+      {recal&&(<Card style={{border:'1px solid '+BD2}}>
+        <Lbl ch={sw?'Urekebishaji wa Akili':'Smart Recalibration'} style={{marginBottom:10}}/>
+        <div style={{color:W2,fontSize:13,lineHeight:1.6,marginBottom:16}}>{sw?'Kulingana na':'Based on'} {recal.loggedDays} {sw?'siku za rekodi katika siku':'days of logs over the last'} {recal.days} {sw?'zilizopita, matumizi yako halisi yanaonekana':'days, your real maintenance looks like'} <span style={{color:W,fontWeight:700}}>{recal.actualMaintenance} kcal</span>{sw?' — mpango wako ulidhania ':' — your plan assumed '}{recal.assumedMaintenance} kcal.</div>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:18}}>
+          <div><Lbl ch={sw?'Lengo Linalopendekezwa':'Suggested Target'} style={{marginBottom:4}}/><div style={{color:W,fontSize:26,fontWeight:800,letterSpacing:'-0.02em'}}>{recal.suggestedCalories}<span style={{fontSize:13,color:W3,fontWeight:400}}> kcal</span></div></div>
+          <div style={{textAlign:'right'}}><Lbl ch={sw?'Sasa':'Current'} style={{marginBottom:4}}/><div style={{color:W3,fontSize:16,fontWeight:600}}>{targets.calories}<span style={{fontSize:12}}> kcal</span></div></div>
+        </div>
+        <div style={{display:'flex',gap:8}}><button className="bp" onClick={applyRecal}>{sw?'Sasisha Lengo':'Update My Target'}</button><button className="bg" onClick={function(){setRecal(null);}}>{sw?'Sio Sasa':'Not Now'}</button></div>
+      </Card>)}
       <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:12}}><StatBox label={sw?'Uzito':'Weight'} value={(latest?latest.weight:profile.weight)+''} sub="kg"/><StatBox label={sw?'Mabadiliko':'Change'} value={change!==null?(Number(change)>0?'+':'')+change:'-'} sub="kg total"/><StatBox label="Score" value={score+''} sub="/ 100"/></div>
       {all10.length>1&&(<Card><Lbl ch="Weight Trend" style={{marginBottom:14}}/><div style={{display:'flex',alignItems:'flex-end',gap:4,height:72}}>{all10.map(function(m,i){var h=maxW===minW?50:Math.max(((m.weight-minW)/(maxW-minW))*60+12,8);var isLatest=i===all10.length-1;return(<div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3}}><div style={{width:'100%',height:h+'px',background:isLatest?W:C3,borderRadius:'3px 3px 0 0',transition:'height .5s ease'}}/><div style={{color:W3,fontSize:8}}>{m.weight}</div></div>);})}</div></Card>)}
       <Card><Lbl ch="Body Measurements (cm)" style={{marginBottom:14}}/>{latest&&Object.keys(meas).some(function(k){return latest[k];})?<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>{Object.keys(meas).map(function(k){return latest[k]?(<div key={k} style={{background:C2,border:'1px solid '+BD,borderRadius:10,padding:'12px'}}><Lbl ch={k} style={{marginBottom:5}}/><div style={{color:W,fontSize:18,fontWeight:700}}>{latest[k]}<span style={{color:W3,fontSize:11,fontWeight:400}}> cm</span></div></div>):null;})}</div>:<div style={{color:W3,fontSize:12,textAlign:'center',padding:'8px 0',letterSpacing:'0.04em'}}>No measurements logged yet</div>}</Card>
@@ -738,7 +794,7 @@ export default function NutriKenya(){
         {tab==='dashboard'&&<Dash profile={profile} targets={targets} log={log} water={water} setWater={setWater} score={score} lang={lang} streak={streak} fasting={fasting} setFasting={setFasting} showToast={showToast} userId={user&&user.id} foods={foods}/>}
         {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants} addToLog={addToLog}/>}
         {tab==='scan'&&<Scan addToLog={addToLog} lang={lang} showToast={showToast}/>}
-        {tab==='metrics'&&<Metrics profile={profile} metrics={metrics} setMetrics={setMetrics} score={score} lang={lang} showToast={showToast} userId={user&&user.id}/>}
+        {tab==='metrics'&&<Metrics profile={profile} targets={targets} setTargets={setTargets} metrics={metrics} setMetrics={setMetrics} score={score} lang={lang} showToast={showToast} userId={user&&user.id}/>}
         {tab==='profile'&&<Profile profile={profile} targets={targets} lang={lang} setLang={setLang} score={score} streak={streak} setScore={setScore} onReset={reset} showToast={showToast} userEmail={user&&user.email} userId={user&&user.id}/>}
       </div>
       <Nav tab={tab} setTab={setTab} lang={lang}/>
