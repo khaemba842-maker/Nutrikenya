@@ -167,7 +167,7 @@ function Auth(props){
         if(r.error)throw r.error;
         props.onDone({name:email.split('@')[0],email:email,id:r.data.user.id});
       } else {
-        var r=await supabase.auth.signUp({email:email,password:password});
+        var r=await supabase.auth.signUp({email:email,password:password,options:{emailRedirectTo:'https://nutrikenya.vercel.app'}});
         if(r.error)throw r.error;
         setConfirmed(true);
       }
@@ -602,7 +602,7 @@ function Profile(props){
   }
   async function handleChangeEmail(){
     if(!newEmail){alert('Enter your new email address.');return;}
-    var res=await supabase.auth.updateUser({email:newEmail});
+    var res=await supabase.auth.updateUser({email:newEmail},{emailRedirectTo:'https://nutrikenya.vercel.app'});
     if(res.error){alert(res.error.message);return;}
     setEmailSent(true);showToast('Confirmation sent to '+newEmail);
   }
