@@ -55,7 +55,14 @@ function calcTargets(pr){
   return{calories:Math.round(cal),protein:m.protein,carbs:m.carbs,fat:m.fat,water:Math.round(weight*33)};
 }
 
-function today(){return new Date().toISOString().split('T')[0];}
+// "Today" means the user's local calendar day, not UTC — Kenya is UTC+3, so
+// anything logged between local midnight and 3am would otherwise land on
+// yesterday's UTC date and appear to vanish once the UTC day rolls over.
+function localDateStr(d){
+  var y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');
+  return y+'-'+m+'-'+day;
+}
+function today(){return localDateStr(new Date());}
 
 // Phone camera photos can be several MB — resize/re-encode client-side before
 // upload so we stay well under serverless request-body limits and keep the
@@ -94,11 +101,11 @@ async function fetchJSON(url,opts,timeoutMs){
 function calcStreak(dateSet){
   var d=new Date();
   var todayStr=today();
-  if(!dateSet.has(todayStr)){d.setUTCDate(d.getUTCDate()-1);}
+  if(!dateSet.has(todayStr)){d.setDate(d.getDate()-1);}
   var count=0;
   while(true){
-    var ds=d.toISOString().split('T')[0];
-    if(dateSet.has(ds)){count++;d.setUTCDate(d.getUTCDate()-1);}else break;
+    var ds=localDateStr(d);
+    if(dateSet.has(ds)){count++;d.setDate(d.getDate()-1);}else break;
   }
   return count;
 }
@@ -189,11 +196,12 @@ function Auth(props){
   var [forgotEmail,setForgotEmail]=useState('');
   var [forgotSent,setForgotSent]=useState(false);
   var sw=props.lang==='sw';
+  var showToast=props.showToast;
   var inp={width:'100%',padding:'0 0 14px',background:'none',border:'none',borderBottom:'1px solid '+BD2,color:W,outline:'none',boxSizing:'border-box',fontFamily:FF,fontSize:20};
 
   async function handleAuth(){
-    if(!email||!password){alert('Please fill in all fields.');return;}
-    if(mode==='signup'&&password.length<8){alert('Password must be at least 8 characters.');return;}
+    if(!email||!password){showToast('Please fill in all fields.');return;}
+    if(mode==='signup'&&password.length<8){showToast('Password must be at least 8 characters.');return;}
     setLoading(true);
     try{
       var r;
@@ -206,15 +214,15 @@ function Auth(props){
         if(r.error)throw r.error;
         setConfirmed(true);
       }
-    }catch(e){alert(e.message||'Something went wrong.');}
+    }catch(e){showToast(e.message||'Something went wrong.');}
     setLoading(false);
   }
 
   async function handleForgot(){
-    if(!forgotEmail){alert('Enter your email address.');return;}
+    if(!forgotEmail){showToast('Enter your email address.');return;}
     setLoading(true);
     var res=await supabase.auth.resetPasswordForEmail(forgotEmail,{redirectTo:'https://nutrikenya.vercel.app'});
-    if(res.error){alert(res.error.message);}else{setForgotSent(true);}
+    if(res.error){showToast(res.error.message);}else{setForgotSent(true);}
     setLoading(false);
   }
 
@@ -271,12 +279,13 @@ function ResetPassword(props){
   var [loading,setLoading]=useState(false);
   var [done,setDone]=useState(false);
   var inp={width:'100%',padding:'0 0 14px',background:'none',border:'none',borderBottom:'1px solid '+BD2,color:W,outline:'none',boxSizing:'border-box',fontFamily:FF,fontSize:20};
+  var showToast=props.showToast;
   async function handleReset(){
-    if(!newPass||newPass.length<8){alert('Password must be at least 8 characters.');return;}
-    if(newPass!==confirm){alert('Passwords do not match.');return;}
+    if(!newPass||newPass.length<8){showToast('Password must be at least 8 characters.');return;}
+    if(newPass!==confirm){showToast('Passwords do not match.');return;}
     setLoading(true);
     var res=await supabase.auth.updateUser({password:newPass});
-    if(res.error){alert(res.error.message);setLoading(false);return;}
+    if(res.error){showToast(res.error.message);setLoading(false);return;}
     setDone(true);setLoading(false);
     setTimeout(function(){props.onDone();},2200);
   }
@@ -458,7 +467,7 @@ function Log(props){
         </div>
         {log[meal].length===0
           ?<div style={{display:'flex',flexDirection:'column',alignItems:'center',padding:'20px 0',gap:8}}><IcPlus s={24} c={C4}/><div style={{color:W3,fontSize:13,letterSpacing:'0.04em'}}>Nothing logged yet</div></div>
-          :log[meal].map(function(item,i,arr){return(<div key={item._k||i}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'11px 0'}}><div style={{flex:1,marginRight:12}}><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?item.s:item.n}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{item.pr}</div></div><div style={{display:'flex',alignItems:'center',gap:10}}><div style={{textAlign:'right'}}><div style={{color:W,fontSize:13,fontWeight:600}}>{item.e} kcal</div><div style={{color:W3,fontSize:10,marginTop:2}}>{item.p}P · {item.c}C · {item.f}F</div></div><button onClick={function(){rm(meal,item._k);}} style={{background:'none',border:'none',cursor:'pointer',padding:4,display:'flex'}}><IcX s={14} c={W3}/></button></div></div>{i<arr.length-1&&<Sep/>}</div>);})}
+          :log[meal].map(function(item,i,arr){return(<div key={item._k||i}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'11px 0'}}><div style={{flex:1,marginRight:12}}><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?item.s:item.n}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{item.pr}</div></div><div style={{display:'flex',alignItems:'center',gap:10}}><div style={{textAlign:'right'}}><div style={{color:W,fontSize:13,fontWeight:600}}>{item.e} kcal</div><div style={{color:W3,fontSize:10,marginTop:2}}>{item.p}P · {item.c}C · {item.f}F</div></div><button onClick={function(){rm(meal,item._k);}} aria-label={'Remove '+item.n} style={{background:'none',border:'none',cursor:'pointer',padding:4,display:'flex'}}><IcX s={14} c={W3}/></button></div></div>{i<arr.length-1&&<Sep/>}</div>);})}
       </Card>
       {recentFoods.length>0&&!adding&&!pending&&(
         <Card>
@@ -473,9 +482,9 @@ function Log(props){
           <Lbl ch={sw?'Rekebisha Kiasi':'Adjust Portion'} style={{marginBottom:10}}/>
           <div style={{color:W,fontSize:15,fontWeight:600,marginBottom:16}}>{sw?pending.s:pending.n}</div>
           <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:20,marginBottom:16}}>
-            <button onClick={function(){setQty(function(q){return Math.max(0.25,Math.round((q-0.25)*100)/100);});}} style={{width:40,height:40,borderRadius:20,background:C2,border:'1px solid '+BD,color:W,fontSize:18,fontWeight:700,cursor:'pointer',fontFamily:FF}}>−</button>
+            <button onClick={function(){setQty(function(q){return Math.max(0.25,Math.round((q-0.25)*100)/100);});}} aria-label="Decrease quantity" style={{width:40,height:40,borderRadius:20,background:C2,border:'1px solid '+BD,color:W,fontSize:18,fontWeight:700,cursor:'pointer',fontFamily:FF}}>−</button>
             <div style={{color:W,fontSize:22,fontWeight:800,minWidth:56,textAlign:'center',fontVariantNumeric:'tabular-nums'}}>{qty}×</div>
-            <button onClick={function(){setQty(function(q){return Math.round((q+0.25)*100)/100;});}} style={{width:40,height:40,borderRadius:20,background:C2,border:'1px solid '+BD,color:W,fontSize:18,fontWeight:700,cursor:'pointer',fontFamily:FF}}>+</button>
+            <button onClick={function(){setQty(function(q){return Math.min(20,Math.round((q+0.25)*100)/100);});}} aria-label="Increase quantity" style={{width:40,height:40,borderRadius:20,background:C2,border:'1px solid '+BD,color:W,fontSize:18,fontWeight:700,cursor:'pointer',fontFamily:FF}}>+</button>
           </div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:18}}>
             {[{l:'Cal',v:Math.round(pending.e*qty)},{l:'Protein',v:Math.round(pending.p*qty)},{l:'Carbs',v:Math.round(pending.c*qty)},{l:'Fat',v:Math.round(pending.f*qty)}].map(function(m){return(<div key={m.l} style={{background:C2,border:'1px solid '+BD,borderRadius:10,padding:'10px 6px',textAlign:'center'}}><Lbl ch={m.l} style={{marginBottom:4,fontSize:9}}/><div style={{color:W,fontSize:14,fontWeight:700}}>{m.v}</div></div>);})}
@@ -647,8 +656,8 @@ function Metrics(props){
   var targetCalories=targets?targets.calories:null;
   useEffect(function(){
     if(!userId||!profile||!targetCalories)return;
-    var cutoff=new Date();cutoff.setUTCDate(cutoff.getUTCDate()-28);
-    var cutoffStr=cutoff.toISOString().split('T')[0];
+    var cutoff=new Date();cutoff.setDate(cutoff.getDate()-28);
+    var cutoffStr=localDateStr(cutoff);
     Promise.all([
       supabase.from('food_logs').select('date,calories').eq('user_id',userId).gte('date',cutoffStr),
       supabase.from('body_metrics').select('date,weight').eq('user_id',userId).gte('date',cutoffStr).order('date',{ascending:true})
@@ -738,13 +747,13 @@ function Profile(props){
   async function handleChangePassword(){
     if(!userEmail)return;
     var res=await supabase.auth.resetPasswordForEmail(userEmail,{redirectTo:'https://nutrikenya.vercel.app'});
-    if(res.error){alert(res.error.message);return;}
+    if(res.error){showToast(res.error.message);return;}
     setPassSent(true);showToast('Password reset email sent');
   }
   async function handleChangeEmail(){
-    if(!newEmail){alert('Enter your new email address.');return;}
+    if(!newEmail){showToast('Enter your new email address.');return;}
     var res=await supabase.auth.updateUser({email:newEmail},{emailRedirectTo:'https://nutrikenya.vercel.app'});
-    if(res.error){alert(res.error.message);return;}
+    if(res.error){showToast(res.error.message);return;}
     setEmailSent(true);showToast('Confirmation sent to '+newEmail);
   }
   var goalLabel={lose:'Fat Loss',gain:'Muscle Gain',recomp:'Body Recomp',maintain:'Maintenance'}[profile.goal];
@@ -874,12 +883,13 @@ export default function NutriKenya(){
       }));
       var map={};
       items.forEach(function(x){
+        if(!x.restaurants)return;
         var rn=x.restaurants.name;
         if(!map[rn])map[rn]={name:rn,g:x.restaurants.group_name,items:[]};
         map[rn].items.push({n:x.name,e:x.calories,p:x.protein,c:x.carbs,f:x.fat,pr:'1 serving · est.'});
       });
       setRestaurants(Object.values(map));
-    });
+    }).catch(function(e){console.error('Failed to load foods/restaurants:',e);});
 
     return function(){sub.data.subscription.unsubscribe();};
   },[]);
@@ -952,9 +962,9 @@ export default function NutriKenya(){
     authHandled.current=false;
   }
 
-  if(screen==='auth') return(<><GS/><Auth onDone={handleAuthDone} lang={lang}/></>);
+  if(screen==='auth') return(<><GS/><Auth onDone={handleAuthDone} lang={lang} showToast={showToast}/><Toast msg={toast}/></>);
   if(screen==='onboard') return(<><GS/><Onboard onDone={handleOnboard} uname={(user&&user.name)||''} lang={lang}/></>);
-  if(screen==='resetPassword') return(<><GS/><ResetPassword onDone={function(){setScreen('auth');}}/></>);
+  if(screen==='resetPassword') return(<><GS/><ResetPassword onDone={function(){setScreen('auth');}} showToast={showToast}/><Toast msg={toast}/></>);
 
   return(
     <div style={{background:BG,position:'fixed',inset:0,fontFamily:FF,color:W}}>
