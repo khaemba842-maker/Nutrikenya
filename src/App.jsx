@@ -28,19 +28,35 @@ const QS=[
     sw:['Polepole — endelevu','Wastani','Haraka — matokeo ya haraka']},
 ];
 
+function clamp(v,lo,hi){return Math.max(lo,Math.min(v,hi));}
+
 function calcTargets(pr){
+  var weight=clamp(pr.weight,20,300),height=clamp(pr.height,50,250),age=clamp(pr.age,10,100);
   var act=Math.max(0,Math.min(parseInt(pr.activity)||2,4));
-  var bmr=pr.sex==='male'?10*pr.weight+6.25*pr.height-5*pr.age+5:10*pr.weight+6.25*pr.height-5*pr.age-161;
+  var bmr=pr.sex==='male'?10*weight+6.25*height-5*age+5:10*weight+6.25*height-5*age-161;
   var cal=bmr*[1.2,1.375,1.55,1.725,1.9][act];
   if(pr.goal==='lose') cal-=pr.speed==='slow'?250:pr.speed==='aggressive'?750:500;
   if(pr.goal==='gain') cal+=pr.speed==='slow'?200:pr.speed==='aggressive'?600:400;
-  var protein=Math.round(pr.weight*(pr.goal==='gain'?2.2:1.8));
+  cal=Math.max(cal,1200);
+  var protein=Math.round(weight*(pr.goal==='gain'?2.2:1.8));
   var fat=Math.round(cal*0.25/9);
-  var carbs=Math.round((cal-protein*4-fat*9)/4);
-  return{calories:Math.round(cal),protein:protein,carbs:carbs,fat:fat,water:Math.round(pr.weight*33)};
+  var carbs=Math.round(Math.max((cal-protein*4-fat*9)/4,0));
+  return{calories:Math.round(cal),protein:protein,carbs:carbs,fat:fat,water:Math.round(weight*33)};
 }
 
 function today(){return new Date().toISOString().split('T')[0];}
+
+function calcStreak(dateSet){
+  var d=new Date();
+  var todayStr=today();
+  if(!dateSet.has(todayStr)){d.setUTCDate(d.getUTCDate()-1);}
+  var count=0;
+  while(true){
+    var ds=d.toISOString().split('T')[0];
+    if(dateSet.has(ds)){count++;d.setUTCDate(d.getUTCDate()-1);}else break;
+  }
+  return count;
+}
 
 // ── GLOBAL STYLES ─────────────────────────────────────────
 function GS(){
@@ -308,7 +324,7 @@ function Dash(props){
 
 // ── LOG ───────────────────────────────────────────────────
 function Log(props){
-  var log=props.log,setLog=props.setLog,lang=props.lang,showToast=props.showToast,userId=props.userId,foods=props.foods||[],restaurants=props.restaurants||[];
+  var log=props.log,setLog=props.setLog,lang=props.lang,showToast=props.showToast,userId=props.userId,foods=props.foods||[],restaurants=props.restaurants||[],addToLog=props.addToLog;
   var [meal,setMeal]=useState('breakfast');
   var [adding,setAdding]=useState(false);
   var [src,setSrc]=useState('foods');
@@ -328,15 +344,8 @@ function Log(props){
     return r.name.toLowerCase().includes(q)||r.items.some(function(item){return item.n.toLowerCase().includes(q);});
   });
   async function add(food){
-    var k=Date.now();
-    setLog(function(l){var n=Object.assign({},l);n[meal]=l[meal].concat([Object.assign({},food,{_k:k,db_id:null})]);return n;});
+    await addToLog(meal,food);
     showToast(food.n+' added');setSearch('');setAdding(false);
-    if(userId){
-      try{
-        var res=await supabase.from('food_logs').insert({user_id:userId,date:today(),meal:meal,food_name:food.n,food_name_sw:food.s||food.n,calories:food.e||0,protein:food.p||0,carbs:food.c||0,fat:food.f||0,portion:food.pr||''}).select('id').single();
-        if(res.data&&res.data.id){setLog(function(l){var n=Object.assign({},l);n[meal]=l[meal].map(function(item){return item._k===k?Object.assign({},item,{db_id:res.data.id}):item;});return n;});}
-      }catch(e){console.error(e);}
-    }
   }
   async function rm(key,k){
     var item=log[key].find(function(x){return x._k===k;});
@@ -437,15 +446,17 @@ function Scan(props){
   var [done,setDone]=useState(false);
   var ref=useRef();
   var sw=lang==='sw';
-  function analyze(){
+  async function analyze(){
     if(!img)return;setLoading(true);setError(null);
     var b64=img.split(',')[1],mt=img.split(';')[0].split(':')[1];
-    fetch('/api/claude',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:700,system:'You are a precision Kenyan nutrition AI. Analyze food images.\nKenyan food reference: Ugali 1cup=370kcal/1.2p/84c/1.6f | Sukuma Wiki 100g=35kcal/3.3p | Nyama Choma 100g=250kcal/26p/16f | Githeri 1cup=142kcal/7p/24c | Chapati 1pc=230kcal/5p/32c/9f | Chicken 100g=165kcal/25p/7f | Eggs 1=70kcal/6p/5f | Rice 1cup=130kcal/2.7p/28c | Tilapia 100g=128kcal/26p/3f.\nRespond ONLY in valid JSON: {"food":"name","portion":"portion","calories":0,"protein":0,"carbs":0,"fat":0,"confidence":"high/medium/low","notes":"insight","budgetKES":0}',messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:mt,data:b64}},{type:'text',text:'Identify this food and estimate nutrition. Consider typical Kenyan portions.'}]}]})
-    }).then(function(r){return r.json();}).then(function(data){
-      if(data.error)throw new Error(data.error.message);
+    try{
+      var session=(await supabase.auth.getSession()).data.session;
+      var r=await fetch('/api/claude',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+(session&&session.access_token)},body:JSON.stringify({action:'scan',image:{mediaType:mt,data:b64}})});
+      var data=await r.json();
+      if(data.error)throw new Error(data.error.message||'Analysis failed');
       var txt=data.content.map(function(i){return i.text||'';}).join('');
-      setResult(JSON.parse(txt.replace(/```json|```/g,'').trim()));setLoading(false);
-    }).catch(function(){setError('Analysis failed. Try a clearer photo.');setLoading(false);});
+      setResult(JSON.parse(txt));setLoading(false);
+    }catch{setError('Analysis failed. Try a clearer photo.');setLoading(false);}
   }
   function confirm(){
     if(!result)return;
@@ -505,7 +516,7 @@ function Metrics(props){
 
 // ── PROFILE ───────────────────────────────────────────────
 function Profile(props){
-  var profile=props.profile,targets=props.targets,lang=props.lang,setLang=props.setLang,score=props.score,streak=props.streak,onReset=props.onReset,setScore=props.setScore,showToast=props.showToast,userEmail=props.userEmail;
+  var profile=props.profile,targets=props.targets,lang=props.lang,setLang=props.setLang,score=props.score,streak=props.streak,onReset=props.onReset,setScore=props.setScore,showToast=props.showToast,userEmail=props.userEmail,userId=props.userId;
   var [plan,setPlan]=useState(null);
   var [planLoad,setPlanLoad]=useState(false);
   var [showPlan,setShowPlan]=useState(false);
@@ -516,10 +527,16 @@ function Profile(props){
   var [passSent,setPassSent]=useState(false);
   var sw=lang==='sw';
   var inp={width:'100%',padding:'0 0 12px',background:'none',border:'none',borderBottom:'1px solid '+BD2,color:W,outline:'none',boxSizing:'border-box',fontFamily:FF,fontSize:18};
-  function genPlan(){
+  async function genPlan(){
     setPlanLoad(true);setShowPlan(true);setPlan(null);
-    fetch('/api/claude',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,messages:[{role:'user',content:'Generate a 3-day Kenyan meal plan. Goal: '+profile.goal+'. Cal: '+targets.calories+'/day. Protein: '+targets.protein+'g. Carbs: '+targets.carbs+'g. Fat: '+targets.fat+'g. Restrictions: '+profile.restrictions+'. ONLY authentic Kenyan foods. JSON ONLY: {"days":[{"day":"Day 1","breakfast":"...","lunch":"...","dinner":"...","calories":0,"protein":0,"tip":"..."}]}'}]})
-    }).then(function(r){return r.json();}).then(function(data){var txt=data.content.map(function(i){return i.text||'';}).join('');setPlan(JSON.parse(txt.replace(/```json|```/g,'').trim()));setPlanLoad(false);}).catch(function(){setPlan({error:true});setPlanLoad(false);});
+    try{
+      var session=(await supabase.auth.getSession()).data.session;
+      var r=await fetch('/api/claude',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+(session&&session.access_token)},body:JSON.stringify({action:'plan',targets:{goal:profile.goal,calories:targets.calories,protein:targets.protein,carbs:targets.carbs,fat:targets.fat,restrictions:profile.restrictions}})});
+      var data=await r.json();
+      if(data.error)throw new Error(data.error.message||'Plan generation failed');
+      var txt=data.content.map(function(i){return i.text||'';}).join('');
+      setPlan(JSON.parse(txt));setPlanLoad(false);
+    }catch{setPlan({error:true});setPlanLoad(false);}
   }
   async function handleChangePassword(){
     if(!userEmail)return;
@@ -565,7 +582,7 @@ function Profile(props){
       {showPlan&&(<Card><Lbl ch="Your 3-Day Kenyan Plan" style={{marginBottom:14}}/>{planLoad&&(<div style={{padding:'20px 0'}}><div style={{height:1,background:C3,overflow:'hidden',position:'relative',marginBottom:8,borderRadius:1}}><div style={{position:'absolute',top:0,left:0,height:'100%',background:W,animation:'scanLine 1.4s ease-in-out infinite',width:'45%',borderRadius:1}}/></div><div style={{color:W3,fontSize:11,letterSpacing:'0.08em',textTransform:'uppercase',textAlign:'center'}}>Generating...</div></div>)}{plan&&plan.error&&<div style={{color:W2,fontSize:13}}>Could not generate. Try again.</div>}{plan&&plan.days&&plan.days.map(function(d,i,arr){return(<div key={i} style={{marginBottom:14,paddingBottom:14,borderBottom:i<arr.length-1?'1px solid '+BD:'none'}}><div style={{color:W,fontSize:11,fontWeight:700,letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:8}}>{d.day}</div>{['breakfast','lunch','dinner'].map(function(m){return d[m]?(<div key={m} style={{marginBottom:7}}><span style={{color:W3,fontSize:10,letterSpacing:'0.06em',textTransform:'uppercase',marginRight:7}}>{m}</span><span style={{color:W2,fontSize:13,lineHeight:1.4}}>{d[m]}</span></div>):null;})}{d.calories&&<div style={{color:W3,fontSize:11,marginTop:7}}>~{d.calories} kcal · {d.protein}g protein</div>}{d.tip&&<div style={{color:W2,fontSize:12,marginTop:5,fontStyle:'italic',lineHeight:1.5}}>{d.tip}</div>}</div>);})}
       <button className="bg" onClick={function(){setShowPlan(false);setPlan(null);}}>Close</button></Card>)}
       <button className="ic" onClick={function(){setCheckin(function(v){return!v;});}} style={{marginBottom:10}}><span style={{letterSpacing:'-0.01em'}}>{sw?'Ukaguzi wa Kila Wiki':'Weekly Check-In'}</span><IcArr c={W2}/></button>
-      {checkin&&(<Card><Lbl ch="How is your week going?" style={{marginBottom:12}}/>{['Crushing it — great progress','Steady — staying consistent','Struggled a bit this week','Need to adjust my goals'].map(function(opt,i,arr){return(<div key={i}><button className="fr" onClick={function(){setCheckin(false);setScore(function(s){return Math.min(s+5,100);});showToast('Check-in complete +5 pts');}}><span style={{color:W,fontSize:14,fontWeight:500}}>{opt}</span><IcArr s={12} c={W3}/></button>{i<arr.length-1&&<Sep/>}</div>);})}</Card>)}
+      {checkin&&(<Card><Lbl ch="How is your week going?" style={{marginBottom:12}}/>{['Crushing it — great progress','Steady — staying consistent','Struggled a bit this week','Need to adjust my goals'].map(function(opt,i,arr){return(<div key={i}><button className="fr" onClick={function(){setCheckin(false);setScore(function(s){var ns=Math.min(s+5,100);if(userId){supabase.from('profiles').update({score:ns}).eq('id',userId);}return ns;});showToast('Check-in complete +5 pts');}}><span style={{color:W,fontSize:14,fontWeight:500}}>{opt}</span><IcArr s={12} c={W3}/></button>{i<arr.length-1&&<Sep/>}</div>);})}</Card>)}
       <button onClick={onReset} style={{width:'100%',padding:'13px',background:'transparent',border:'1px solid rgba(255,255,255,0.08)',borderRadius:10,color:W3,fontSize:12,cursor:'pointer',marginTop:4,fontFamily:FF,letterSpacing:'0.06em',textTransform:'uppercase'}}>{sw?'Anza Upya':'Sign Out & Reset'}</button>
     </div>
   );
@@ -594,7 +611,7 @@ export default function NutriKenya(){
   var [water,setWater]=useState(0);
   var [foods,setFoods]=useState([]);
   var [restaurants,setRestaurants]=useState([]);
-  var streak=7;
+  var [streak,setStreak]=useState(0);
   var [score,setScore]=useState(68);
   var [fasting,setFasting]=useState(false);
   var [toast,setToast]=useState(null);
@@ -663,8 +680,10 @@ export default function NutriKenya(){
 
   async function addToLog(meal,food){
     var k=Date.now();
+    var isFirstToday=['breakfast','lunch','dinner','snacks'].every(function(m){return log[m].length===0;});
     setLog(function(l){var n=Object.assign({},l);n[meal]=l[meal].concat([Object.assign({},food,{_k:k,db_id:null})]);return n;});
-    setScore(function(s){return Math.min(s+2,100);});
+    setScore(function(s){var ns=Math.min(s+2,100);if(user&&user.id){supabase.from('profiles').update({score:ns}).eq('id',user.id);}return ns;});
+    if(isFirstToday){setStreak(function(s){return s+1;});}
     if(user&&user.id){
       try{
         var res=await supabase.from('food_logs').insert({user_id:user.id,date:today(),meal:meal,food_name:food.n,food_name_sw:food.s||food.n,calories:food.e||0,protein:food.p||0,carbs:food.c||0,fat:food.f||0,portion:food.pr||''}).select('id').single();
@@ -681,8 +700,11 @@ export default function NutriKenya(){
       if(pRes.data){
         var d=pRes.data;
         setProfile(d);setTargets({calories:d.calories,protein:d.protein,carbs:d.carbs,fat:d.fat,water:d.water});
+        setScore(typeof d.score==='number'?d.score:68);
         var lRes=await supabase.from('food_logs').select('*').eq('user_id',userData.id).eq('date',today());
         if(lRes.data&&lRes.data.length>0){var newLog={breakfast:[],lunch:[],dinner:[],snacks:[]};lRes.data.forEach(function(item){var m=item.meal;if(newLog[m]){newLog[m].push({n:item.food_name,s:item.food_name_sw||item.food_name,e:item.calories,p:item.protein,c:item.carbs,f:item.fat,pr:item.portion,cat:'Logged',_k:item.id,db_id:item.id});}});setLog(newLog);}
+        var datesRes=await supabase.from('food_logs').select('date').eq('user_id',userData.id);
+        if(datesRes.data){setStreak(calcStreak(new Set(datesRes.data.map(function(x){return x.date;}))));}
         var mRes=await supabase.from('body_metrics').select('*').eq('user_id',userData.id).order('created_at',{ascending:true});
         if(mRes.data&&mRes.data.length>0){setMetrics(mRes.data.map(function(m){return{date:new Date(m.date).toLocaleDateString('en-KE'),weight:m.weight,waist:m.waist,chest:m.chest,hips:m.hips,neck:m.neck};}));}
         if(d.water_date===today()&&d.water_logged){setWater(d.water_logged);}
@@ -694,14 +716,14 @@ export default function NutriKenya(){
 
   async function handleOnboard(pr){
     setProfile(pr);var t=calcTargets(pr);setTargets(t);
-    if(user&&user.id){await supabase.from('profiles').upsert({id:user.id,name:pr.name,age:pr.age,sex:pr.sex,weight:pr.weight,height:pr.height,goal:pr.goal,speed:pr.speed,activity:pr.activity,workout_type:pr.workoutType,restrictions:pr.restrictions,calories:t.calories,protein:t.protein,carbs:t.carbs,fat:t.fat,water:t.water});}
+    if(user&&user.id){await supabase.from('profiles').upsert({id:user.id,name:pr.name,age:pr.age,sex:pr.sex,weight:pr.weight,height:pr.height,goal:pr.goal,speed:pr.speed,activity:pr.activity,workout_type:pr.workoutType,restrictions:pr.restrictions,calories:t.calories,protein:t.protein,carbs:t.carbs,fat:t.fat,water:t.water,score:score});}
     setScreen('app');
   }
 
   function reset(){
     supabase.auth.signOut();
     setUser(null);setProfile(null);setTargets(null);setScreen('auth');setTab('dashboard');
-    setLog({breakfast:[],lunch:[],dinner:[],snacks:[]});setMetrics([]);setWater(0);setScore(68);setFasting(false);
+    setLog({breakfast:[],lunch:[],dinner:[],snacks:[]});setMetrics([]);setWater(0);setScore(68);setStreak(0);setFasting(false);
     authHandled.current=false;
   }
 
@@ -714,10 +736,10 @@ export default function NutriKenya(){
       <GS/>
       <div className="scroll-inner" style={{paddingBottom:'calc(68px + env(safe-area-inset-bottom))'}}>
         {tab==='dashboard'&&<Dash profile={profile} targets={targets} log={log} water={water} setWater={setWater} score={score} lang={lang} streak={streak} fasting={fasting} setFasting={setFasting} showToast={showToast} userId={user&&user.id} foods={foods}/>}
-        {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants}/>}
+        {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants} addToLog={addToLog}/>}
         {tab==='scan'&&<Scan addToLog={addToLog} lang={lang} showToast={showToast}/>}
         {tab==='metrics'&&<Metrics profile={profile} metrics={metrics} setMetrics={setMetrics} score={score} lang={lang} showToast={showToast} userId={user&&user.id}/>}
-        {tab==='profile'&&<Profile profile={profile} targets={targets} lang={lang} setLang={setLang} score={score} streak={streak} setScore={setScore} onReset={reset} showToast={showToast} userEmail={user&&user.email}/>}
+        {tab==='profile'&&<Profile profile={profile} targets={targets} lang={lang} setLang={setLang} score={score} streak={streak} setScore={setScore} onReset={reset} showToast={showToast} userEmail={user&&user.email} userId={user&&user.id}/>}
       </div>
       <Nav tab={tab} setTab={setTab} lang={lang}/>
       <Toast msg={toast}/>
