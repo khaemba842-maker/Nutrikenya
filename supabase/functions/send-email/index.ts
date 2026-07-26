@@ -8,6 +8,14 @@ const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
 const HOOK_SECRET = Deno.env.get("SEND_EMAIL_HOOK_SECRET");
 const FROM_EMAIL = Deno.env.get("EMAIL_FROM") || "NutriKenya <onboarding@resend.dev>";
 
+// The Supabase project's own API base -- NOT email_data.site_url, which is
+// the app's configured Site URL and may already include a path (observed:
+// it included "/auth/v1" on this project, causing a doubled-up verify path
+// when naively concatenated). The verify endpoint always lives here.
+const SUPABASE_URL = "https://pnvxiwggidqryqsmghqf.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBudnhpd2dnaWRxcnlxc21naHFmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0MDM2NzEsImV4cCI6MjA5OTk3OTY3MX0.MTVeA_2jVBOeGrbNA0K_swnkMMhDvJcMKKuv966TH18";
+const APP_URL = "https://nutrikenya.vercel.app";
+
 function base64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
@@ -104,11 +112,10 @@ Deno.serve(async (req: Request) => {
   const user = body.user || {};
   const emailData = body.email_data || {};
   const actionType = emailData.email_action_type || "signup";
-  const siteUrl = emailData.site_url || "";
   const tokenHash = emailData.token_hash || "";
-  const redirectTo = emailData.redirect_to || siteUrl;
+  const redirectTo = emailData.redirect_to || APP_URL;
 
-  const confirmUrl = `${siteUrl}/auth/v1/verify?token=${tokenHash}&type=${actionType}&redirect_to=${encodeURIComponent(redirectTo)}`;
+  const confirmUrl = `${SUPABASE_URL}/auth/v1/verify?token=${tokenHash}&type=${actionType}&redirect_to=${encodeURIComponent(redirectTo)}&apikey=${SUPABASE_ANON_KEY}`;
 
   const resendRes = await fetch("https://api.resend.com/emails", {
     method: "POST",
