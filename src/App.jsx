@@ -57,6 +57,40 @@ function calcTargets(pr){
 
 function today(){return new Date().toISOString().split('T')[0];}
 
+// Phone camera photos can be several MB — resize/re-encode client-side before
+// upload so we stay well under serverless request-body limits and keep the
+// scan snappy. Long side capped at 1024px, which is plenty for food ID.
+function resizeImage(dataUrl,maxDim){
+  return new Promise(function(resolve){
+    var img=new Image();
+    img.onload=function(){
+      var scale=Math.min(1,maxDim/Math.max(img.width,img.height));
+      var w=Math.max(1,Math.round(img.width*scale)),h=Math.max(1,Math.round(img.height*scale));
+      var canvas=document.createElement('canvas');
+      canvas.width=w;canvas.height=h;
+      var ctx=canvas.getContext('2d');
+      ctx.drawImage(img,0,0,w,h);
+      resolve(canvas.toDataURL('image/jpeg',0.82));
+    };
+    img.onerror=function(){resolve(dataUrl);};
+    img.src=dataUrl;
+  });
+}
+
+async function fetchJSON(url,opts,timeoutMs){
+  var controller=new AbortController();
+  var timer=setTimeout(function(){controller.abort();},timeoutMs||45000);
+  try{
+    var r=await fetch(url,Object.assign({},opts,{signal:controller.signal}));
+    return await r.json();
+  }catch(e){
+    if(e.name==='AbortError')throw new Error('Request timed out. Check your connection and try again.',{cause:e});
+    throw e;
+  }finally{
+    clearTimeout(timer);
+  }
+}
+
 function calcStreak(dateSet){
   var d=new Date();
   var todayStr=today();
@@ -162,12 +196,13 @@ function Auth(props){
     if(mode==='signup'&&password.length<8){alert('Password must be at least 8 characters.');return;}
     setLoading(true);
     try{
+      var r;
       if(mode==='login'){
-        var r=await supabase.auth.signInWithPassword({email:email,password:password});
+        r=await supabase.auth.signInWithPassword({email:email,password:password});
         if(r.error)throw r.error;
         props.onDone({name:email.split('@')[0],email:email,id:r.data.user.id});
       } else {
-        var r=await supabase.auth.signUp({email:email,password:password,options:{emailRedirectTo:'https://nutrikenya.vercel.app'}});
+        r=await supabase.auth.signUp({email:email,password:password,options:{emailRedirectTo:'https://nutrikenya.vercel.app'}});
         if(r.error)throw r.error;
         setConfirmed(true);
       }
@@ -297,16 +332,19 @@ function Onboard(props){
 
 // ── DASHBOARD ─────────────────────────────────────────────
 function Dash(props){
-  var profile=props.profile,targets=props.targets,log=props.log,water=props.water,setWater=props.setWater,score=props.score,lang=props.lang,streak=props.streak,fasting=props.fasting,setFasting=props.setFasting,showToast=props.showToast,userId=props.userId,foods=props.foods||[];
+  var profile=props.profile,targets=props.targets,log=props.log,water=props.water,setWater=props.setWater,score=props.score,lang=props.lang,streak=props.streak,fasting=props.fasting,setFasting=props.setFasting,fStart=props.fStart,setFStart=props.setFStart,showToast=props.showToast,userId=props.userId,foods=props.foods||[];
   var sw=lang==='sw';
-  var [elapsed,setElapsed]=useState(0);
-  var [fStart,setFStart]=useState(null);
+  // fStart is lifted to the parent so the timer survives switching tabs away
+  // from Dashboard and back (this component unmounts/remounts on tab change).
+  var [elapsed,setElapsed]=useState(function(){return fasting&&fStart?Math.floor((Date.now()-fStart)/1000):0;});
   useEffect(function(){
-    if(!fasting){setElapsed(0);setFStart(null);return;}
+    // Stopping resets elapsed/fStart in the button handler itself (below), so
+    // this effect only ever needs to start the ticking interval.
+    if(!fasting)return;
     var t0=fStart||Date.now();if(!fStart)setFStart(t0);
     var t=setInterval(function(){setElapsed(Math.floor((Date.now()-t0)/1000));},1000);
     return function(){clearInterval(t);};
-  },[fasting,fStart]);
+  },[fasting,fStart,setFStart]);
   var all=log.breakfast.concat(log.lunch,log.dinner,log.snacks);
   var tot=all.reduce(function(a,i){return{cal:a.cal+i.e,p:a.p+i.p,c:a.c+i.c,f:a.f+i.f};},{cal:0,p:0,c:0,f:0});
   var rem=Math.max(targets.calories-tot.cal,0);
@@ -398,13 +436,12 @@ function Log(props){
     setQuickLoading(true);setQuickError(null);setQuickItems(null);
     try{
       var session=(await supabase.auth.getSession()).data.session;
-      var r=await fetch('/api/claude',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+(session&&session.access_token)},body:JSON.stringify({action:'quickadd',description:quickText})});
-      var data=await r.json();
+      var data=await fetchJSON('/api/claude',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+(session&&session.access_token)},body:JSON.stringify({action:'quickadd',description:quickText})});
       if(data.error)throw new Error(data.error.message||'Could not parse description');
       var txt=data.content.map(function(i){return i.text||'';}).join('');
       var parsed=JSON.parse(txt);
       setQuickItems(parsed.items||[]);
-    }catch{setQuickError('Could not parse that. Try rephrasing.');}
+    }catch(e){setQuickError(e.message&&e.message.indexOf('timed out')>-1?e.message:'Could not parse that. Try rephrasing.');}
     setQuickLoading(false);
   }
   var kcal=log[meal].reduce(function(a,i){return a+i.e;},0);
@@ -544,12 +581,11 @@ function Scan(props){
     var b64=src.split(',')[1],mt=src.split(';')[0].split(':')[1];
     try{
       var session=(await supabase.auth.getSession()).data.session;
-      var r=await fetch('/api/claude',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+(session&&session.access_token)},body:JSON.stringify({action:'scan',image:{mediaType:mt,data:b64}})});
-      var data=await r.json();
+      var data=await fetchJSON('/api/claude',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+(session&&session.access_token)},body:JSON.stringify({action:'scan',image:{mediaType:mt,data:b64}})});
       if(data.error)throw new Error(data.error.message||'Analysis failed');
       var txt=data.content.map(function(i){return i.text||'';}).join('');
       setResult(JSON.parse(txt));setLoading(false);
-    }catch{setError('Analysis failed. Try a clearer photo.');setLoading(false);}
+    }catch(e){setError(e.message&&e.message.indexOf('timed out')>-1?e.message:'Analysis failed. Try a clearer photo.');setLoading(false);}
   }
   function confirm(){
     if(!result)return;
@@ -562,9 +598,22 @@ function Scan(props){
       <div style={{fontSize:24,fontWeight:800,color:W,letterSpacing:'-0.03em',marginBottom:6}}>{sw?'Skani ya AI':'AI Scanner'}</div>
       <div style={{color:W2,fontSize:13,marginBottom:20,lineHeight:1.5}}>Photograph your meal for instant nutritional analysis</div>
       <div style={{display:'flex',gap:6,marginBottom:20,flexWrap:'wrap'}}>{['breakfast','lunch','dinner','snacks'].map(function(m){var active=meal===m;return(<button key={m} className="pill" onClick={function(){setMeal(m);}} style={{border:'1px solid '+(active?W:BD),background:active?W:'transparent',color:active?BG:W2,padding:'7px 12px',textTransform:'capitalize'}}>{m}</button>);})}</div>
-      <input ref={ref} type="file" accept="image/*" capture="environment" onChange={function(e){var file=e.target.files[0];if(!file)return;var r=new FileReader();r.onload=function(ev){var data=ev.target.result;setImg(data);setResult(null);setError(null);setDone(false);analyze(data);};r.readAsDataURL(file);}} style={{display:'none'}}/>
+      <input ref={ref} type="file" accept="image/*" capture="environment" onChange={function(e){
+        var file=e.target.files[0];
+        e.target.value='';
+        if(!file)return;
+        setResult(null);setError(null);setDone(false);setImg(null);setLoading(true);
+        var reader=new FileReader();
+        reader.onload=async function(ev){
+          var resized=await resizeImage(ev.target.result,1024);
+          setImg(resized);
+          analyze(resized);
+        };
+        reader.onerror=function(){setLoading(false);setError('Could not read that photo. Try again.');};
+        reader.readAsDataURL(file);
+      }} style={{display:'none'}}/>
       {done&&<div style={{background:C1,border:'1px solid '+BD2,borderRadius:16,padding:28,textAlign:'center',marginBottom:12}}><div style={{color:W,fontSize:16,fontWeight:700}}>Added to {meal}.</div></div>}
-      {!img&&!done&&(<div onClick={function(){ref.current.click();}} style={{border:'1px dashed '+BD2,borderRadius:16,padding:44,textAlign:'center',cursor:'pointer',marginBottom:12}}><div style={{display:'flex',justifyContent:'center',marginBottom:14}}><IcScan s={32} c={W3}/></div><div style={{color:W,fontSize:15,fontWeight:600,marginBottom:5}}>{sw?'Gusa hapa kupiga picha':'Tap to photograph your meal'}</div><div style={{color:W3,fontSize:12}}>{sw?'au chagua kutoka galari':'or select from gallery'}</div></div>)}
+      {!img&&!done&&!loading&&(<div onClick={function(){ref.current.click();}} style={{border:'1px dashed '+BD2,borderRadius:16,padding:44,textAlign:'center',cursor:'pointer',marginBottom:12}}><div style={{display:'flex',justifyContent:'center',marginBottom:14}}><IcScan s={32} c={W3}/></div><div style={{color:W,fontSize:15,fontWeight:600,marginBottom:5}}>{sw?'Gusa hapa kupiga picha':'Tap to photograph your meal'}</div><div style={{color:W3,fontSize:12}}>{sw?'au chagua kutoka galari':'or select from gallery'}</div></div>)}
       {img&&!done&&(<div style={{marginBottom:12}}><div style={{position:'relative'}}><img src={img} alt="Food" style={{width:'100%',borderRadius:16,maxHeight:260,objectFit:'cover',display:'block'}}/></div><button className="bg" onClick={function(){setImg(null);setResult(null);setError(null);}} style={{marginTop:8,width:'auto',padding:'8px 14px'}}>Retake</button></div>)}
       {img&&error&&!loading&&!done&&<button className="bp" onClick={function(){analyze(img);}} style={{marginBottom:10}}>Retry Analysis</button>}
       {loading&&(<Card><div style={{color:W2,fontSize:11,letterSpacing:'0.12em',textTransform:'uppercase',marginBottom:12,textAlign:'center'}}>Analyzing your meal</div><div style={{height:1,background:C3,overflow:'hidden',position:'relative',borderRadius:1}}><div style={{position:'absolute',top:0,left:0,height:'100%',background:W,animation:'scanLine 1.4s ease-in-out infinite',width:'45%',borderRadius:1}}/></div></Card>)}
@@ -616,9 +665,9 @@ function Metrics(props){
       var avgIntake=loggedDates.reduce(function(a,d){return a+byDate[d];},0)/loggedDates.length;
       var actualMaintenance=Math.round(avgIntake-(deltaWeight*7700)/days);
       var assumedMaintenance=Math.round(calcMaintenance(profile));
-      var goalOffset=targets.calories-assumedMaintenance;
+      var goalOffset=targetCalories-assumedMaintenance;
       var suggestedCalories=Math.max(1200,Math.round(actualMaintenance+goalOffset));
-      if(Math.abs(suggestedCalories-targets.calories)<75){setRecal(null);return;}
+      if(Math.abs(suggestedCalories-targetCalories)<75){setRecal(null);return;}
       setRecal({assumedMaintenance:assumedMaintenance,actualMaintenance:actualMaintenance,suggestedCalories:suggestedCalories,days:Math.round(days),loggedDays:loggedDates.length});
     });
   },[userId,profile,targetCalories]);
@@ -680,12 +729,11 @@ function Profile(props){
     setPlanLoad(true);setShowPlan(true);setPlan(null);
     try{
       var session=(await supabase.auth.getSession()).data.session;
-      var r=await fetch('/api/claude',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+(session&&session.access_token)},body:JSON.stringify({action:'plan',targets:{goal:profile.goal,calories:targets.calories,protein:targets.protein,carbs:targets.carbs,fat:targets.fat,restrictions:profile.restrictions}})});
-      var data=await r.json();
+      var data=await fetchJSON('/api/claude',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+(session&&session.access_token)},body:JSON.stringify({action:'plan',targets:{goal:profile.goal,calories:targets.calories,protein:targets.protein,carbs:targets.carbs,fat:targets.fat,restrictions:profile.restrictions}})},55000);
       if(data.error)throw new Error(data.error.message||'Plan generation failed');
       var txt=data.content.map(function(i){return i.text||'';}).join('');
       setPlan(JSON.parse(txt));setPlanLoad(false);
-    }catch{setPlan({error:true});setPlanLoad(false);}
+    }catch(e){setPlan({error:true,message:e.message&&e.message.indexOf('timed out')>-1?e.message:null});setPlanLoad(false);}
   }
   async function handleChangePassword(){
     if(!userEmail)return;
@@ -728,7 +776,7 @@ function Profile(props){
         <div style={{display:'flex',gap:6}}>{['en','sw'].map(function(l){var active=lang===l;return(<button key={l} className="pill" onClick={function(){setLang(l);}} style={{border:'1px solid '+(active?W:BD),background:active?W:'transparent',color:active?BG:W2,padding:'7px 12px'}}>{l==='en'?'EN':'SW'}</button>);})}</div>
       </Card>
       <button className="ic" onClick={genPlan} style={{marginBottom:10}}><span style={{letterSpacing:'-0.01em'}}>{sw?'Mpango wa Chakula wa AI':'Generate AI Meal Plan'}</span><IcArr c={W2}/></button>
-      {showPlan&&(<Card><Lbl ch="Your 3-Day Kenyan Plan" style={{marginBottom:14}}/>{planLoad&&(<div style={{padding:'20px 0'}}><div style={{height:1,background:C3,overflow:'hidden',position:'relative',marginBottom:8,borderRadius:1}}><div style={{position:'absolute',top:0,left:0,height:'100%',background:W,animation:'scanLine 1.4s ease-in-out infinite',width:'45%',borderRadius:1}}/></div><div style={{color:W3,fontSize:11,letterSpacing:'0.08em',textTransform:'uppercase',textAlign:'center'}}>Generating...</div></div>)}{plan&&plan.error&&<div style={{color:W2,fontSize:13}}>Could not generate. Try again.</div>}{plan&&plan.days&&plan.days.map(function(d,i,arr){return(<div key={i} style={{marginBottom:14,paddingBottom:14,borderBottom:i<arr.length-1?'1px solid '+BD:'none'}}><div style={{color:W,fontSize:11,fontWeight:700,letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:8}}>{d.day}</div>{['breakfast','lunch','dinner'].map(function(m){return d[m]?(<div key={m} style={{marginBottom:7}}><span style={{color:W3,fontSize:10,letterSpacing:'0.06em',textTransform:'uppercase',marginRight:7}}>{m}</span><span style={{color:W2,fontSize:13,lineHeight:1.4}}>{d[m]}</span></div>):null;})}{d.calories&&<div style={{color:W3,fontSize:11,marginTop:7}}>~{d.calories} kcal · {d.protein}g protein</div>}{d.tip&&<div style={{color:W2,fontSize:12,marginTop:5,fontStyle:'italic',lineHeight:1.5}}>{d.tip}</div>}</div>);})}
+      {showPlan&&(<Card><Lbl ch="Your 3-Day Kenyan Plan" style={{marginBottom:14}}/>{planLoad&&(<div style={{padding:'20px 0'}}><div style={{height:1,background:C3,overflow:'hidden',position:'relative',marginBottom:8,borderRadius:1}}><div style={{position:'absolute',top:0,left:0,height:'100%',background:W,animation:'scanLine 1.4s ease-in-out infinite',width:'45%',borderRadius:1}}/></div><div style={{color:W3,fontSize:11,letterSpacing:'0.08em',textTransform:'uppercase',textAlign:'center'}}>Generating...</div></div>)}{plan&&plan.error&&<div style={{color:W2,fontSize:13}}>{plan.message||'Could not generate. Try again.'}</div>}{plan&&plan.days&&plan.days.map(function(d,i,arr){return(<div key={i} style={{marginBottom:14,paddingBottom:14,borderBottom:i<arr.length-1?'1px solid '+BD:'none'}}><div style={{color:W,fontSize:11,fontWeight:700,letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:8}}>{d.day}</div>{['breakfast','lunch','dinner'].map(function(m){return d[m]?(<div key={m} style={{marginBottom:7}}><span style={{color:W3,fontSize:10,letterSpacing:'0.06em',textTransform:'uppercase',marginRight:7}}>{m}</span><span style={{color:W2,fontSize:13,lineHeight:1.4}}>{d[m]}</span></div>):null;})}{d.calories&&<div style={{color:W3,fontSize:11,marginTop:7}}>~{d.calories} kcal · {d.protein}g protein</div>}{d.tip&&<div style={{color:W2,fontSize:12,marginTop:5,fontStyle:'italic',lineHeight:1.5}}>{d.tip}</div>}</div>);})}
       <button className="bg" onClick={function(){setShowPlan(false);setPlan(null);}}>Close</button></Card>)}
       <button className="ic" onClick={function(){setCheckin(function(v){return!v;});}} style={{marginBottom:10}}><span style={{letterSpacing:'-0.01em'}}>{sw?'Ukaguzi wa Kila Wiki':'Weekly Check-In'}</span><IcArr c={W2}/></button>
       {checkin&&(<Card><Lbl ch="How is your week going?" style={{marginBottom:12}}/>{['Crushing it — great progress','Steady — staying consistent','Struggled a bit this week','Need to adjust my goals'].map(function(opt,i,arr){return(<div key={i}><button className="fr" onClick={function(){setCheckin(false);setScore(function(s){var ns=Math.min(s+5,100);if(userId){supabase.from('profiles').update({score:ns}).eq('id',userId);}return ns;});showToast('Check-in complete +5 pts');}}><span style={{color:W,fontSize:14,fontWeight:500}}>{opt}</span><IcArr s={12} c={W3}/></button>{i<arr.length-1&&<Sep/>}</div>);})}</Card>)}
@@ -764,6 +812,7 @@ export default function NutriKenya(){
   var [streak,setStreak]=useState(0);
   var [score,setScore]=useState(68);
   var [fasting,setFasting]=useState(false);
+  var [fStart,setFStart]=useState(null);
   var [toast,setToast]=useState(null);
   var toastTimer=useRef(null);
   var authHandled=useRef(false);
@@ -899,7 +948,7 @@ export default function NutriKenya(){
   function reset(){
     supabase.auth.signOut();
     setUser(null);setProfile(null);setTargets(null);setScreen('auth');setTab('dashboard');
-    setLog({breakfast:[],lunch:[],dinner:[],snacks:[]});setMetrics([]);setWater(0);setScore(68);setStreak(0);setFasting(false);setRecentFoods([]);
+    setLog({breakfast:[],lunch:[],dinner:[],snacks:[]});setMetrics([]);setWater(0);setScore(68);setStreak(0);setFasting(false);setFStart(null);setRecentFoods([]);
     authHandled.current=false;
   }
 
@@ -911,7 +960,7 @@ export default function NutriKenya(){
     <div style={{background:BG,position:'fixed',inset:0,fontFamily:FF,color:W}}>
       <GS/>
       <div className="scroll-inner" style={{paddingBottom:'calc(68px + env(safe-area-inset-bottom))'}}>
-        {tab==='dashboard'&&<Dash profile={profile} targets={targets} log={log} water={water} setWater={setWater} score={score} lang={lang} streak={streak} fasting={fasting} setFasting={setFasting} showToast={showToast} userId={user&&user.id} foods={foods}/>}
+        {tab==='dashboard'&&<Dash profile={profile} targets={targets} log={log} water={water} setWater={setWater} score={score} lang={lang} streak={streak} fasting={fasting} setFasting={setFasting} fStart={fStart} setFStart={setFStart} showToast={showToast} userId={user&&user.id} foods={foods}/>}
         {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants} recentFoods={recentFoods} addToLog={addToLog}/>}
         {tab==='scan'&&<Scan addToLog={addToLog} lang={lang} showToast={showToast}/>}
         {tab==='metrics'&&<Metrics profile={profile} targets={targets} setTargets={setTargets} metrics={metrics} setMetrics={setMetrics} score={score} lang={lang} showToast={showToast} userId={user&&user.id}/>}
