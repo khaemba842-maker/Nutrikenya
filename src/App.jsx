@@ -257,7 +257,10 @@ function Auth(props){
           <button className="bg" onClick={function(){setMode('login');}}>LOG IN</button>
         </div>
       </div>
-      <div style={{position:'absolute',bottom:'calc(24px + env(safe-area-inset-bottom))',color:W3,fontSize:10,letterSpacing:'0.1em',textTransform:'uppercase',pointerEvents:'none'}}>Made in Kenya</div>
+      <div style={{position:'absolute',bottom:'calc(24px + env(safe-area-inset-bottom))',display:'flex',flexDirection:'column',alignItems:'center',gap:8}}>
+        <div style={{color:W3,fontSize:10,letterSpacing:'0.1em',textTransform:'uppercase',pointerEvents:'none'}}>Made in Kenya</div>
+        <div style={{fontSize:10,letterSpacing:'0.04em'}}><span onClick={function(){props.onLegal('privacy');}} style={{color:W3,cursor:'pointer'}}>Privacy</span><span style={{color:W3,margin:'0 6px'}}>·</span><span onClick={function(){props.onLegal('terms');}} style={{color:W3,cursor:'pointer'}}>Terms</span></div>
+      </div>
     </div>
   );
 
@@ -299,6 +302,48 @@ function ResetPassword(props){
   }
   if(done) return(<div className="screen-fixed" style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:40,textAlign:'center',fontFamily:FF}}><div style={{width:64,height:64,borderRadius:32,background:C2,border:'1px solid '+BD2,display:'flex',alignItems:'center',justifyContent:'center',marginBottom:28}}><svg width={28} height={28} viewBox="0 0 28 28" fill="none"><path d="M6 14L11 19L22 9" stroke={W} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"/></svg></div><div style={{color:W,fontSize:24,fontWeight:800,letterSpacing:'-0.03em',marginBottom:10}}>Password updated.</div><div style={{color:W2,fontSize:14,lineHeight:1.7,maxWidth:280}}>Your password has been changed. Taking you back now.</div></div>);
   return(<div className="screen-fixed" style={{display:'flex',flexDirection:'column',fontFamily:FF}}><div style={{padding:'calc(60px + env(safe-area-inset-top)) 24px 24px',display:'flex',flexDirection:'column',flex:1}}><div style={{maxWidth:340,width:'100%',margin:'0 auto'}}><div style={{fontSize:28,fontWeight:800,color:W,letterSpacing:'-0.03em',marginBottom:6}}>Set new password.</div><div style={{color:W2,fontSize:14,marginBottom:40,lineHeight:1.6}}>Choose a strong password for your NutriKenya account.</div><div style={{marginBottom:28}}><Lbl ch="New Password" style={{marginBottom:10}}/><input value={newPass} onChange={function(e){setNewPass(e.target.value);}} placeholder="Min. 8 characters" type="password" autoFocus style={inp}/></div><div style={{marginBottom:36}}><Lbl ch="Confirm Password" style={{marginBottom:10}}/><input value={confirm} onChange={function(e){setConfirm(e.target.value);}} onKeyDown={function(e){if(e.key==='Enter')handleReset();}} placeholder="Repeat password" type="password" style={inp}/></div><button className="bp" onClick={handleReset} disabled={loading||!newPass||!confirm}>{loading?'Updating...':'Update Password'}</button></div></div></div>);
+}
+
+// ── LEGAL (PRIVACY / TERMS) ────────────────────────────────
+var PRIVACY_SECTIONS=[
+  {h:'What NutriKenya is',b:"NutriKenya is a nutrition-tracking app for Kenya. This policy explains what information we collect, why, and the rights you have over it under Kenya's Data Protection Act, 2019."},
+  {h:'Information we collect',b:'Account info (email, password — password is never visible to us, Supabase Auth stores it hashed). Profile info you provide during onboarding (name, age, sex, weight, height, activity level, goals, dietary restrictions). Food logs, body measurements, and water intake you choose to record. Meal photos you submit to the AI Scanner.'},
+  {h:'How meal photos are handled',b:'Photos you scan are sent to our AI provider (Anthropic) solely to estimate nutrition, and are not stored by NutriKenya after the estimate is returned. We do not use your photos to train any model.'},
+  {h:'Who we share data with',b:'We use a small number of service providers to run NutriKenya: Supabase (database hosting and authentication), Anthropic (AI food-photo and meal-plan analysis), and Resend (account and password-reset emails). We do not sell your personal data to anyone, ever.'},
+  {h:'How long we keep it',b:'Your data is kept while your account is active. If you delete your account, your profile, logs, and metrics are permanently removed from our database.'},
+  {h:'Your rights',b:'Under the Data Protection Act, 2019, you have the right to access, correct, delete, restrict, or export (in a portable format) your personal data, and to object to how it is processed. To exercise any of these, contact us using the details below — most of this you can already do yourself from the Profile screen (edit your data, or Sign Out & Reset to clear a local session).'},
+  {h:'Security',b:"All traffic to NutriKenya is encrypted (HTTPS). Your data is protected by row-level security rules that mean only you can read or write your own records, enforced at the database level, not just in the app's interface."},
+  {h:'Children',b:'NutriKenya is not directed at children under 18. If you believe a child has created an account, contact us and we will remove it.'},
+  {h:'Changes to this policy',b:"If this policy changes materially, we'll update the date below. Continued use of NutriKenya after a change means you accept the update."},
+  {h:'Contact',b:'Questions or requests about your data: privacy@aiscope.online'},
+];
+var TERMS_SECTIONS=[
+  {h:'Agreement',b:'By creating a NutriKenya account, you agree to these terms. If you don’t agree, please don’t use the app.'},
+  {h:'Not medical advice',b:'NutriKenya provides estimates — calorie and macro targets, AI food-photo analysis, and meal suggestions are calculated from general formulas and Kenyan food-composition data, and can be inaccurate. Nothing in this app is medical, dietary, or clinical advice. If you have a health condition, are pregnant, or have specific dietary needs, talk to a qualified healthcare professional before making decisions based on anything NutriKenya shows you.'},
+  {h:'Your account',b:'You’re responsible for the accuracy of the information you enter and for keeping your password secure. You must be 18 or older to create an account.'},
+  {h:'Acceptable use',b:'Use NutriKenya only for its intended purpose — personal nutrition tracking. Don’t attempt to abuse, overload, or reverse-engineer the AI features, and don’t use the service for anything unlawful.'},
+  {h:'AI feature limits',b:'AI photo scanning, quick-add parsing, and meal-plan generation have real per-use cost to us. We may rate-limit, throttle, or place these behind a paid tier at any time; core manual food logging will always remain free.'},
+  {h:'Subscriptions',b:'NutriKenya is currently free. If we introduce paid plans, pricing and billing terms (including via M-Pesa) will be shown clearly before you’re charged, and this section will be updated.'},
+  {h:'No warranty',b:'NutriKenya is provided "as is." We work to keep nutrition data accurate, but we don’t guarantee it’s error-free, and we’re not liable for decisions made based on the app’s estimates.'},
+  {h:'Ending your account',b:'You can stop using NutriKenya at any time via Sign Out & Reset. To permanently delete your account and data, contact us at the address below.'},
+  {h:'Governing law',b:'These terms are governed by the laws of Kenya.'},
+  {h:'Contact',b:'Questions about these terms: legal@aiscope.online'},
+];
+function LegalDoc(props){
+  var isPrivacy=props.doc==='privacy';
+  var sections=isPrivacy?PRIVACY_SECTIONS:TERMS_SECTIONS;
+  return(
+    <div className="screen-fixed" style={{display:'flex',flexDirection:'column',fontFamily:FF}}>
+      <div style={{padding:'calc(52px + env(safe-area-inset-top)) 24px 24px',display:'flex',flexDirection:'column',flex:1,overflow:'hidden'}}>
+        <button className="bg" onClick={props.onBack} style={{width:'auto',alignSelf:'flex-start',padding:'8px 16px',marginBottom:24,flexShrink:0}}>← BACK</button>
+        <div style={{maxWidth:520,width:'100%',margin:'0 auto',flex:1,overflowY:'auto',paddingBottom:24}}>
+          <div style={{fontSize:26,fontWeight:800,color:W,letterSpacing:'-0.03em',marginBottom:6}}>{isPrivacy?'Privacy Policy':'Terms of Service'}</div>
+          <div style={{color:W3,fontSize:12,marginBottom:28}}>Last updated 27 July 2026</div>
+          {sections.map(function(s,i){return(<div key={i} style={{marginBottom:22}}><div style={{color:W,fontSize:13,fontWeight:700,letterSpacing:'0.02em',marginBottom:6,textTransform:'uppercase'}}>{s.h}</div><div style={{color:W2,fontSize:14,lineHeight:1.7}}>{s.b}</div></div>);})}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── ONBOARD ───────────────────────────────────────────────
@@ -753,7 +798,7 @@ function Metrics(props){
 
 // ── PROFILE ───────────────────────────────────────────────
 function Profile(props){
-  var profile=props.profile,targets=props.targets,lang=props.lang,setLang=props.setLang,score=props.score,streak=props.streak,onReset=props.onReset,setScore=props.setScore,showToast=props.showToast,userEmail=props.userEmail,userId=props.userId;
+  var profile=props.profile,targets=props.targets,lang=props.lang,setLang=props.setLang,score=props.score,streak=props.streak,onReset=props.onReset,setScore=props.setScore,showToast=props.showToast,userEmail=props.userEmail,userId=props.userId,onLegal=props.onLegal;
   var [plan,setPlan]=useState(null);
   var [planLoad,setPlanLoad]=useState(false);
   var [showPlan,setShowPlan]=useState(false);
@@ -820,6 +865,7 @@ function Profile(props){
       <button className="bg" onClick={function(){setShowPlan(false);setPlan(null);}}>Close</button></Card>)}
       <button className="ic" onClick={function(){setCheckin(function(v){return!v;});}} style={{marginBottom:10}}><span style={{letterSpacing:'-0.01em'}}>{sw?'Ukaguzi wa Kila Wiki':'Weekly Check-In'}</span><IcArr c={W2}/></button>
       {checkin&&(<Card><Lbl ch="How is your week going?" style={{marginBottom:12}}/>{['Crushing it — great progress','Steady — staying consistent','Struggled a bit this week','Need to adjust my goals'].map(function(opt,i,arr){return(<div key={i}><button className="fr" onClick={function(){setCheckin(false);setScore(function(s){var ns=Math.min(s+5,100);if(userId){supabase.from('profiles').update({score:ns}).eq('id',userId);}return ns;});showToast('Check-in complete +5 pts');}}><span style={{color:W,fontSize:14,fontWeight:500}}>{opt}</span><IcArr s={12} c={W3}/></button>{i<arr.length-1&&<Sep/>}</div>);})}</Card>)}
+      <div style={{display:'flex',justifyContent:'center',gap:14,margin:'18px 0 4px'}}><span onClick={function(){onLegal('privacy');}} style={{color:W3,fontSize:11,cursor:'pointer',letterSpacing:'0.04em'}}>Privacy Policy</span><span style={{color:W3,fontSize:11}}>·</span><span onClick={function(){onLegal('terms');}} style={{color:W3,fontSize:11,cursor:'pointer',letterSpacing:'0.04em'}}>Terms of Service</span></div>
       <button onClick={onReset} style={{width:'100%',padding:'13px',background:'transparent',border:'1px solid rgba(255,255,255,0.08)',borderRadius:10,color:W3,fontSize:12,cursor:'pointer',marginTop:4,fontFamily:FF,letterSpacing:'0.06em',textTransform:'uppercase'}}>{sw?'Anza Upya':'Sign Out & Reset'}</button>
     </div>
   );
@@ -838,6 +884,7 @@ function Toast(props){if(!props.msg)return null;return <div className="toast">{p
 // ── MAIN ──────────────────────────────────────────────────
 export default function NutriKenya(){
   var [screen,setScreen]=useState('auth'); // welcome screen shown immediately
+  var [legalReturn,setLegalReturn]=useState('auth');
   var [tab,setTab]=useState('dashboard');
   var [lang,setLang]=useState('en');
   var [user,setUser]=useState(null);
@@ -1010,9 +1057,10 @@ export default function NutriKenya(){
     authHandled.current=false;
   }
 
-  if(screen==='auth') return(<><GS/><Auth onDone={handleAuthDone} lang={lang} showToast={showToast}/><Toast msg={toast}/></>);
+  if(screen==='auth') return(<><GS/><Auth onDone={handleAuthDone} lang={lang} showToast={showToast} onLegal={function(doc){setLegalReturn('auth');setScreen(doc);}}/><Toast msg={toast}/></>);
   if(screen==='onboard') return(<><GS/><Onboard onDone={handleOnboard} uname={(user&&user.name)||''} lang={lang}/></>);
   if(screen==='resetPassword') return(<><GS/><ResetPassword onDone={function(){setScreen('auth');}} showToast={showToast}/><Toast msg={toast}/></>);
+  if(screen==='privacy'||screen==='terms') return(<><GS/><LegalDoc doc={screen} onBack={function(){setScreen(legalReturn);}}/></>);
 
   return(
     <div style={{background:BG,position:'fixed',inset:0,fontFamily:FF,color:W}}>
@@ -1022,7 +1070,7 @@ export default function NutriKenya(){
         {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants} recentFoods={recentFoods} addToLog={addToLog}/>}
         {tab==='scan'&&<Scan addToLog={addToLog} lang={lang} showToast={showToast}/>}
         {tab==='metrics'&&<Metrics profile={profile} setProfile={setProfile} targets={targets} setTargets={setTargets} metrics={metrics} setMetrics={setMetrics} score={score} lang={lang} showToast={showToast} userId={user&&user.id}/>}
-        {tab==='profile'&&<Profile profile={profile} targets={targets} lang={lang} setLang={setLang} score={score} streak={streak} setScore={setScore} onReset={reset} showToast={showToast} userEmail={user&&user.email} userId={user&&user.id}/>}
+        {tab==='profile'&&<Profile profile={profile} targets={targets} lang={lang} setLang={setLang} score={score} streak={streak} setScore={setScore} onReset={reset} showToast={showToast} userEmail={user&&user.email} userId={user&&user.id} onLegal={function(doc){setLegalReturn('app');setScreen(doc);}}/>}
       </div>
       <Nav tab={tab} setTab={setTab} lang={lang}/>
       <Toast msg={toast}/>
