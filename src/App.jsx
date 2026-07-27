@@ -124,7 +124,6 @@ function GS(){
       @keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
       @keyframes slideR{from{opacity:0;transform:translateX(24px)}to{opacity:1;transform:translateX(0)}}
       @keyframes r1{to{transform:rotate(360deg)}}
-      @keyframes r2{to{transform:rotate(-360deg)}}
       @keyframes scanLine{0%{left:-45%}100%{left:145%}}
       @keyframes toastUp{from{opacity:0;transform:translateX(-50%) translateY(10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
       .page{animation:fadeUp .28s cubic-bezier(.4,0,.2,1) both;}
@@ -168,7 +167,7 @@ function IcChevron(p){var s=p.s||14,c=p.c||W3,d=p.down;return(<svg width={s} hei
 function Ring(props){
   var val=props.val||0,max=props.max||1,sz=props.sz||160,th=props.th||10;
   var r=(sz-th)/2,circ=2*Math.PI*r,pct=max>0?Math.min(val/max,1):0;
-  return(<div style={{position:'relative',width:sz,height:sz,display:'flex',alignItems:'center',justifyContent:'center'}}><svg width={sz} height={sz} style={{position:'absolute',transform:'rotate(-90deg)'}}><circle cx={sz/2} cy={sz/2} r={r} fill="none" stroke={C3} strokeWidth={th}/><circle cx={sz/2} cy={sz/2} r={r} fill="none" stroke={W} strokeWidth={th} strokeDasharray={circ} strokeDashoffset={circ-pct*circ} strokeLinecap="round" style={{transition:'stroke-dashoffset .8s cubic-bezier(.4,0,.2,1)'}}/></svg><div style={{position:'relative',zIndex:1,textAlign:'center'}}>{props.children}</div></div>);
+  return(<div style={{position:'relative',width:sz,height:sz,display:'flex',alignItems:'center',justifyContent:'center'}}><svg width={sz} height={sz} style={{position:'absolute',top:0,left:0,transform:'rotate(-90deg)'}}><circle cx={sz/2} cy={sz/2} r={r} fill="none" stroke={C3} strokeWidth={th}/><circle cx={sz/2} cy={sz/2} r={r} fill="none" stroke={W} strokeWidth={th} strokeDasharray={circ} strokeDashoffset={circ-pct*circ} strokeLinecap="round" style={{transition:'stroke-dashoffset .8s cubic-bezier(.4,0,.2,1)'}}/></svg><div style={{position:'relative',zIndex:1,textAlign:'center'}}>{props.children}</div></div>);
 }
 function Bar(props){
   var pct=props.max>0?Math.min((props.val||0)/props.max*100,100):0;
@@ -242,10 +241,14 @@ function Auth(props){
     <div className="screen-fixed" style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:32,textAlign:'center',fontFamily:FF}}>
       <div style={{position:'absolute',inset:0,backgroundImage:'radial-gradient(circle,rgba(255,255,255,0.05) 1px,transparent 1px)',backgroundSize:'32px 32px',pointerEvents:'none'}}/>
       <div style={{position:'relative',zIndex:1,display:'flex',flexDirection:'column',alignItems:'center'}}>
-        <div style={{position:'relative',width:96,height:96,marginBottom:40,pointerEvents:'none',flexShrink:0}}>
-          <svg width={96} height={96} viewBox="0 0 96 96" style={{position:'absolute',animation:'r1 12s linear infinite'}}><circle cx={48} cy={48} r={44} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={1}/><circle cx={48} cy={48} r={44} fill="none" stroke="rgba(255,255,255,0.45)" strokeWidth={0.8} strokeDasharray="38 240" strokeLinecap="round"/></svg>
-          <svg width={96} height={96} viewBox="0 0 96 96" style={{position:'absolute',animation:'r2 18s linear infinite'}}><circle cx={48} cy={48} r={32} fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth={1}/><circle cx={48} cy={48} r={32} fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth={0.8} strokeDasharray="20 180" strokeLinecap="round"/></svg>
-          <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center'}}><div style={{width:5,height:5,background:W,borderRadius:'50%'}}/></div>
+        <div style={{position:'relative',width:136,height:136,marginBottom:36,pointerEvents:'none',flexShrink:0}}>
+          <svg width={136} height={136} viewBox="0 0 120 120">
+            <circle cx={60} cy={60} r={50} fill="none" stroke="rgba(255,255,255,0.18)" strokeWidth={1.25}/>
+            <path d="M26,80 L41,52 L47,59 L58,34 L70,63 L80,52 L94,80" fill="none" stroke={W} strokeWidth={2.25} strokeLinejoin="round" strokeLinecap="round"/>
+            <g style={{animation:'r1 22s linear infinite',transformOrigin:'60px 60px'}}>
+              <circle cx={60} cy={60} r={50} fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth={1.5} strokeDasharray="26 288" strokeLinecap="round"/>
+            </g>
+          </svg>
         </div>
         <div style={{fontSize:36,fontWeight:900,color:W,letterSpacing:'-0.05em',lineHeight:1,marginBottom:10}}>NUTRIKENYA</div>
         <div style={{color:W2,fontSize:11,letterSpacing:'0.2em',textTransform:'uppercase',marginBottom:52}}>{sw?'INTELIJENSIA YA LISHE · KENYA':'NUTRITION INTELLIGENCE · KENYA'}</div>
