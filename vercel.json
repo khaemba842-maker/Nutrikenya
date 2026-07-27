@@ -3,8 +3,12 @@
   "outputDirectory": "dist",
   "framework": "vite",
   "functions": {
-    "api/claude.js": { "maxDuration": 60 }
+    "api/claude.js": { "maxDuration": 60 },
+    "api/send-push.js": { "maxDuration": 30 }
   },
+  "crons": [
+    { "path": "/api/send-push", "schedule": "0 15 * * *" }
+  ],
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ]

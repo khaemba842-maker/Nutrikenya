@@ -1,6 +1,7 @@
 import { supabase } from './supabase'
 import { logError } from './errorLog'
 import { queueWrite, cancelQueued, registerHandler, installOnlineFlush, queueLength, onQueueChange } from './offlineQueue'
+import { pushSupported, getPushSubscription, subscribeToPush, unsubscribeFromPush } from './push'
 import { useState, useRef, useEffect } from "react";
 
 const BG='#070707',C1='#0D0D0D',C2='#141414',C3='#1C1C1C',C4='#252525';
@@ -931,11 +932,31 @@ function Profile(props){
   var [passSent,setPassSent]=useState(false);
   var [pendingSync,setPendingSync]=useState(function(){return queueLength();});
   var [exporting,setExporting]=useState(false);
+  var [remindersOn,setRemindersOn]=useState(false);
+  var [remindersBusy,setRemindersBusy]=useState(false);
   var sw=lang==='sw';
   var inp={width:'100%',padding:'0 0 12px',background:'none',border:'none',borderBottom:'1px solid '+BD2,color:W,outline:'none',boxSizing:'border-box',fontFamily:FF,fontSize:18};
   useEffect(function(){
     return onQueueChange(setPendingSync);
   },[]);
+  useEffect(function(){
+    if(!pushSupported())return;
+    getPushSubscription().then(function(sub){setRemindersOn(!!sub);}).catch(function(){});
+  },[]);
+  async function toggleReminders(){
+    if(!userId){showToast('Sign in to enable reminders');return;}
+    setRemindersBusy(true);
+    try{
+      if(remindersOn){
+        await unsubscribeFromPush();
+        setRemindersOn(false);showToast('Reminders turned off');
+      }else{
+        await subscribeToPush(userId);
+        setRemindersOn(true);showToast('Reminders turned on');
+      }
+    }catch(e){console.error(e);logError('push-toggle',e,userId);showToast(e.message||"Couldn't update reminders");}
+    setRemindersBusy(false);
+  }
   async function genPlan(){
     setPlanLoad(true);setShowPlan(true);setPlan(null);
     try{
@@ -1019,6 +1040,10 @@ function Profile(props){
         <div><Lbl ch="Language / Lugha" style={{marginBottom:4}}/><div style={{color:W,fontSize:14,fontWeight:500}}>English · Kiswahili</div></div>
         <div style={{display:'flex',gap:6}}>{['en','sw'].map(function(l){var active=lang===l;return(<button key={l} className="pill" onClick={function(){setLang(l);}} style={{border:'1px solid '+(active?W:BD),background:active?W:'transparent',color:active?BG:W2,padding:'7px 12px'}}>{l==='en'?'EN':'SW'}</button>);})}</div>
       </Card>
+      {pushSupported()&&(<Card style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <div><Lbl ch={sw?'Vikumbusho':'Reminders'} style={{marginBottom:4}}/><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?'Kikumbusho cha kila siku cha kurekodi':'Daily nudge to log your meals'}</div></div>
+        <button className="pill" disabled={remindersBusy} onClick={toggleReminders} style={{border:'1px solid '+(remindersOn?W:BD),background:remindersOn?W:'transparent',color:remindersOn?BG:W2,padding:'7px 14px',opacity:remindersBusy?0.6:1}}>{remindersOn?'ON':'OFF'}</button>
+      </Card>)}
       <button className="ic" onClick={genPlan} style={{marginBottom:10}}><span style={{letterSpacing:'-0.01em'}}>{sw?'Mpango wa Chakula wa AI':'Generate AI Meal Plan'}</span><IcArr c={W2}/></button>
       {showPlan&&(<Card><Lbl ch="Your 3-Day Kenyan Plan" style={{marginBottom:14}}/>{planLoad&&(<div style={{padding:'20px 0'}}><div style={{height:1,background:C3,overflow:'hidden',position:'relative',marginBottom:8,borderRadius:1}}><div style={{position:'absolute',top:0,left:0,height:'100%',background:W,animation:'scanLine 1.4s ease-in-out infinite',width:'45%',borderRadius:1}}/></div><div style={{color:W3,fontSize:11,letterSpacing:'0.08em',textTransform:'uppercase',textAlign:'center'}}>Generating...</div></div>)}{plan&&plan.error&&<div style={{color:W2,fontSize:13}}>{plan.message||'Could not generate. Try again.'}</div>}{plan&&plan.days&&plan.days.map(function(d,i,arr){return(<div key={i} style={{marginBottom:14,paddingBottom:14,borderBottom:i<arr.length-1?'1px solid '+BD:'none'}}><div style={{color:W,fontSize:11,fontWeight:700,letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:8}}>{d.day}</div>{['breakfast','lunch','dinner'].map(function(m){return d[m]?(<div key={m} style={{marginBottom:7}}><span style={{color:W3,fontSize:10,letterSpacing:'0.06em',textTransform:'uppercase',marginRight:7}}>{m}</span><span style={{color:W2,fontSize:13,lineHeight:1.4}}>{d[m]}</span></div>):null;})}{d.calories&&<div style={{color:W3,fontSize:11,marginTop:7}}>~{d.calories} kcal · {d.protein}g protein</div>}{d.tip&&<div style={{color:W2,fontSize:12,marginTop:5,fontStyle:'italic',lineHeight:1.5}}>{d.tip}</div>}</div>);})}
       <button className="bg" onClick={function(){setShowPlan(false);setPlan(null);}}>Close</button></Card>)}
