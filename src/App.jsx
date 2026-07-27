@@ -696,6 +696,8 @@ function Metrics(props){
   var latest=metrics.length>0?metrics[metrics.length-1]:null;
   var change=metrics.length>1?(parseFloat(metrics[metrics.length-1].weight)-parseFloat(metrics[0].weight)).toFixed(1):null;
   var all10=metrics.slice(-10);
+  var currentWeight=parseFloat(latest?latest.weight:profile.weight);
+  var toGoal=profile.targetWeight?Math.abs(currentWeight-profile.targetWeight).toFixed(1):null;
   var maxW=all10.length>1?Math.max.apply(null,all10.map(function(m){return m.weight;})):null;
   var minW=all10.length>1?Math.min.apply(null,all10.map(function(m){return m.weight;})):null;
   return(
@@ -711,6 +713,7 @@ function Metrics(props){
         <div style={{display:'flex',gap:8}}><button className="bp" onClick={applyRecal}>{sw?'Sasisha Lengo':'Update My Target'}</button><button className="bg" onClick={function(){setRecal(null);}}>{sw?'Sio Sasa':'Not Now'}</button></div>
       </Card>)}
       <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:12}}><StatBox label={sw?'Uzito':'Weight'} value={(latest?latest.weight:profile.weight)+''} sub="kg"/><StatBox label={sw?'Mabadiliko':'Change'} value={change!==null?(Number(change)>0?'+':'')+change:'-'} sub="kg total"/><StatBox label="Score" value={score+''} sub="/ 100"/></div>
+      {toGoal!==null&&(<Card style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><div><Lbl ch={sw?'Lengo':'Goal Weight'} style={{marginBottom:4}}/><div style={{color:W,fontSize:14,fontWeight:600}}>{profile.targetWeight} kg</div></div><div style={{textAlign:'right'}}><Lbl ch={sw?'Iliyobaki':'To Go'} style={{marginBottom:4}}/><div style={{color:W,fontSize:18,fontWeight:800}}>{Number(toGoal)===0?(sw?'Umefika!':'Reached!'):toGoal+' kg'}</div></div></Card>)}
       {all10.length>1&&(<Card><Lbl ch="Weight Trend" style={{marginBottom:14}}/><div style={{display:'flex',alignItems:'flex-end',gap:4,height:72}}>{all10.map(function(m,i){var h=maxW===minW?50:Math.max(((m.weight-minW)/(maxW-minW))*60+12,8);var isLatest=i===all10.length-1;return(<div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:3}}><div style={{width:'100%',height:h+'px',background:isLatest?W:C3,borderRadius:'3px 3px 0 0',transition:'height .5s ease'}}/><div style={{color:W3,fontSize:8}}>{m.weight}</div></div>);})}</div></Card>)}
       <Card><Lbl ch="Body Measurements (cm)" style={{marginBottom:14}}/>{latest&&Object.keys(meas).some(function(k){return latest[k];})?<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>{Object.keys(meas).map(function(k){return latest[k]?(<div key={k} style={{background:C2,border:'1px solid '+BD,borderRadius:10,padding:'12px'}}><Lbl ch={k} style={{marginBottom:5}}/><div style={{color:W,fontSize:18,fontWeight:700}}>{latest[k]}<span style={{color:W3,fontSize:11,fontWeight:400}}> cm</span></div></div>):null;})}</div>:<div style={{color:W3,fontSize:12,textAlign:'center',padding:'8px 0',letterSpacing:'0.04em'}}>No measurements logged yet</div>}</Card>
       {metrics.length>0&&(<Card><Lbl ch="History" style={{marginBottom:12}}/>{metrics.slice().reverse().slice(0,6).map(function(m,i,arr){return(<div key={i}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'9px 0'}}><span style={{color:W2,fontSize:13}}>{m.date}</span><span style={{color:W,fontSize:14,fontWeight:600}}>{m.weight} kg</span></div>{i<arr.length-1&&<Sep/>}</div>);})}</Card>)}
@@ -920,7 +923,11 @@ export default function NutriKenya(){
       var pRes=await supabase.from('profiles').select('*').eq('id',userData.id).single();
       if(pRes.data){
         var d=pRes.data;
-        setProfile(d);setTargets({calories:d.calories,protein:d.protein,carbs:d.carbs,fat:d.fat,water:d.water});
+        // The DB row is snake_case; normalize to the camelCase shape the
+        // freshly-onboarded profile object uses so fields like workoutType
+        // and targetWeight aren't silently undefined after a re-login.
+        setProfile(Object.assign({},d,{workoutType:d.workout_type,targetWeight:d.target_weight||0}));
+        setTargets({calories:d.calories,protein:d.protein,carbs:d.carbs,fat:d.fat,water:d.water});
         setScore(typeof d.score==='number'?d.score:68);
         var lRes=await supabase.from('food_logs').select('*').eq('user_id',userData.id).eq('date',today());
         if(lRes.data&&lRes.data.length>0){var newLog={breakfast:[],lunch:[],dinner:[],snacks:[]};lRes.data.forEach(function(item){var m=item.meal;if(newLog[m]){newLog[m].push({n:item.food_name,s:item.food_name_sw||item.food_name,e:item.calories,p:item.protein,c:item.carbs,f:item.fat,pr:item.portion,cat:'Logged',_k:item.id,db_id:item.id});}});setLog(newLog);}
@@ -948,7 +955,7 @@ export default function NutriKenya(){
     setProfile(pr);var t=calcTargets(pr);setTargets(t);
     if(user&&user.id){
       try{
-        var res=await supabase.from('profiles').upsert({id:user.id,name:pr.name,age:pr.age,sex:pr.sex,weight:pr.weight,height:pr.height,goal:pr.goal,speed:pr.speed,activity:pr.activity,workout_type:pr.workoutType,restrictions:pr.restrictions,calories:t.calories,protein:t.protein,carbs:t.carbs,fat:t.fat,water:t.water,score:score});
+        var res=await supabase.from('profiles').upsert({id:user.id,name:pr.name,age:pr.age,sex:pr.sex,weight:pr.weight,height:pr.height,goal:pr.goal,speed:pr.speed,activity:pr.activity,workout_type:pr.workoutType,restrictions:pr.restrictions,target_weight:pr.targetWeight||null,calories:t.calories,protein:t.protein,carbs:t.carbs,fat:t.fat,water:t.water,score:score});
         if(res.error)throw res.error;
       }catch(e){console.error(e);showToast("Couldn't save your profile — check your connection");}
     }
