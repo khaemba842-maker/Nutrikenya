@@ -200,17 +200,21 @@ function Auth(props){
   var inp={width:'100%',padding:'0 0 14px',background:'none',border:'none',borderBottom:'1px solid '+BD2,color:W,outline:'none',boxSizing:'border-box',fontFamily:FF,fontSize:20};
 
   async function handleAuth(){
-    if(!email||!password){showToast('Please fill in all fields.');return;}
+    // Mobile keyboards can leave a stray leading/trailing space via
+    // autocomplete/autocapitalize; trim the email (never the password —
+    // that's exactly what the user typed and shouldn't be second-guessed).
+    var cleanEmail=email.trim();
+    if(!cleanEmail||!password){showToast('Please fill in all fields.');return;}
     if(mode==='signup'&&password.length<8){showToast('Password must be at least 8 characters.');return;}
     setLoading(true);
     try{
       var r;
       if(mode==='login'){
-        r=await supabase.auth.signInWithPassword({email:email,password:password});
+        r=await supabase.auth.signInWithPassword({email:cleanEmail,password:password});
         if(r.error)throw r.error;
-        props.onDone({name:email.split('@')[0],email:email,id:r.data.user.id});
+        props.onDone({name:cleanEmail.split('@')[0],email:cleanEmail,id:r.data.user.id});
       } else {
-        r=await supabase.auth.signUp({email:email,password:password,options:{emailRedirectTo:'https://nutrikenya.vercel.app'}});
+        r=await supabase.auth.signUp({email:cleanEmail,password:password,options:{emailRedirectTo:'https://nutrikenya.vercel.app'}});
         if(r.error)throw r.error;
         setConfirmed(true);
       }
@@ -219,9 +223,10 @@ function Auth(props){
   }
 
   async function handleForgot(){
-    if(!forgotEmail){showToast('Enter your email address.');return;}
+    var cleanEmail=forgotEmail.trim();
+    if(!cleanEmail){showToast('Enter your email address.');return;}
     setLoading(true);
-    var res=await supabase.auth.resetPasswordForEmail(forgotEmail,{redirectTo:'https://nutrikenya.vercel.app'});
+    var res=await supabase.auth.resetPasswordForEmail(cleanEmail,{redirectTo:'https://nutrikenya.vercel.app'});
     if(res.error){showToast(res.error.message);}else{setForgotSent(true);}
     setLoading(false);
   }
@@ -230,7 +235,7 @@ function Auth(props){
 
   if(forgotMode){
     if(forgotSent) return(<EmailSentScreen title="Check your email" subtitle="We sent a password reset link to" email={forgotEmail} body="Click the link in the email to set a new password. The link expires in 24 hours." actionLabel="Back to Log In" hint="Didn't get it? Check your spam folder." onAction={function(){setForgotMode(false);setForgotSent(false);setForgotEmail('');}}/>);
-    return(<div className="screen-fixed" style={{display:'flex',flexDirection:'column',fontFamily:FF}}><div style={{padding:'calc(52px + env(safe-area-inset-top)) 24px 24px',display:'flex',flexDirection:'column',flex:1,overflow:'hidden'}}><button className="bg" onClick={function(){setForgotMode(false);}} style={{width:'auto',alignSelf:'flex-start',padding:'8px 16px',marginBottom:32,flexShrink:0}}>← BACK</button><div style={{maxWidth:340,width:'100%',margin:'0 auto'}}><div style={{fontSize:28,fontWeight:800,color:W,letterSpacing:'-0.03em',marginBottom:6}}>Forgot password?</div><div style={{color:W2,fontSize:14,marginBottom:36,lineHeight:1.6}}>Enter the email address for your account and we'll send you a reset link.</div><div style={{marginBottom:32}}><Lbl ch="Email" style={{marginBottom:10}}/><input value={forgotEmail} onChange={function(e){setForgotEmail(e.target.value);}} onKeyDown={function(e){if(e.key==='Enter')handleForgot();}} placeholder="your@email.com" type="email" autoFocus style={inp}/></div><button className="bp" onClick={handleForgot} disabled={loading}>{loading?'Sending...':'Send Reset Link'}</button></div></div></div>);
+    return(<div className="screen-fixed" style={{display:'flex',flexDirection:'column',fontFamily:FF}}><div style={{padding:'calc(52px + env(safe-area-inset-top)) 24px 24px',display:'flex',flexDirection:'column',flex:1,overflow:'hidden'}}><button className="bg" onClick={function(){setForgotMode(false);}} style={{width:'auto',alignSelf:'flex-start',padding:'8px 16px',marginBottom:32,flexShrink:0}}>← BACK</button><div style={{maxWidth:340,width:'100%',margin:'0 auto'}}><div style={{fontSize:28,fontWeight:800,color:W,letterSpacing:'-0.03em',marginBottom:6}}>Forgot password?</div><div style={{color:W2,fontSize:14,marginBottom:36,lineHeight:1.6}}>Enter the email address for your account and we'll send you a reset link.</div><div style={{marginBottom:32}}><Lbl ch="Email" style={{marginBottom:10}}/><input value={forgotEmail} onChange={function(e){setForgotEmail(e.target.value);}} onKeyDown={function(e){if(e.key==='Enter')handleForgot();}} placeholder="your@email.com" type="email" autoCapitalize="none" autoCorrect="off" spellCheck="false" autoFocus style={inp}/></div><button className="bp" onClick={handleForgot} disabled={loading}>{loading?'Sending...':'Send Reset Link'}</button></div></div></div>);
   }
 
   if(mode==='welcome') return(
@@ -261,7 +266,7 @@ function Auth(props){
           <div style={{fontSize:30,fontWeight:800,color:W,letterSpacing:'-0.03em',lineHeight:1.1,marginBottom:6}}>{mode==='login'?'Welcome back.':'Create account.'}</div>
           <div style={{color:W2,fontSize:14,marginBottom:36}}>{mode==='login'?'Continue your journey.':'Your transformation starts here.'}</div>
           {mode==='signup'&&<div style={{marginBottom:24}}><Lbl ch="Name" style={{marginBottom:10}}/><input value={name} onChange={function(e){setName(e.target.value);}} placeholder="Your name" autoFocus style={inp}/></div>}
-          <div style={{marginBottom:24}}><Lbl ch="Email" style={{marginBottom:10}}/><input value={email} onChange={function(e){setEmail(e.target.value);}} placeholder="your@email.com" type="email" autoFocus={mode==='login'} style={inp}/></div>
+          <div style={{marginBottom:24}}><Lbl ch="Email" style={{marginBottom:10}}/><input value={email} onChange={function(e){setEmail(e.target.value);}} placeholder="your@email.com" type="email" autoCapitalize="none" autoCorrect="off" spellCheck="false" autoFocus={mode==='login'} style={inp}/></div>
           <div style={{marginBottom:mode==='login'?16:32}}><Lbl ch="Password" style={{marginBottom:10}}/><input value={password} onChange={function(e){setPassword(e.target.value);}} onKeyDown={function(e){if(e.key==='Enter')handleAuth();}} placeholder={mode==='signup'?'Min. 8 characters':'Your password'} type="password" style={inp}/></div>
           {mode==='login'&&<div style={{textAlign:'right',marginBottom:28}}><span onClick={function(){setForgotMode(true);setForgotEmail(email);}} style={{color:W2,fontSize:12,cursor:'pointer',letterSpacing:'0.02em'}}>Forgot password?</span></div>}
           <button className="bp" onClick={handleAuth} disabled={loading}>{loading?'Please wait...':(mode==='login'?'Log In':'Continue')}</button>
@@ -773,10 +778,11 @@ function Profile(props){
     setPassSent(true);showToast('Password reset email sent');
   }
   async function handleChangeEmail(){
-    if(!newEmail){showToast('Enter your new email address.');return;}
-    var res=await supabase.auth.updateUser({email:newEmail},{emailRedirectTo:'https://nutrikenya.vercel.app'});
+    var cleanEmail=newEmail.trim();
+    if(!cleanEmail){showToast('Enter your new email address.');return;}
+    var res=await supabase.auth.updateUser({email:cleanEmail},{emailRedirectTo:'https://nutrikenya.vercel.app'});
     if(res.error){showToast(res.error.message);return;}
-    setEmailSent(true);showToast('Confirmation sent to '+newEmail);
+    setEmailSent(true);showToast('Confirmation sent to '+cleanEmail);
   }
   var goalLabel={lose:'Fat Loss',gain:'Muscle Gain',recomp:'Body Recomp',maintain:'Maintenance'}[profile.goal];
   var actLabels=['Sedentary','Light','Moderate','Very Active','Extreme'];
@@ -799,7 +805,7 @@ function Profile(props){
         <Sep/>
         <div style={{marginTop:16}}>
           <Lbl ch="Change Email" style={{marginBottom:10}}/>
-          {emailSent?<div style={{color:W2,fontSize:13,lineHeight:1.6}}>Confirmation sent to <span style={{color:W}}>{newEmail}</span>. Click the link to confirm your new email.</div>:<div><div style={{color:W3,fontSize:12,lineHeight:1.6,marginBottom:12}}>Current: <span style={{color:W2}}>{userEmail}</span></div><input value={newEmail} onChange={function(e){setNewEmail(e.target.value);}} placeholder="New email address" type="email" style={{...inp,marginBottom:12}}/><button className="bg" onClick={handleChangeEmail} style={{width:'auto',padding:'10px 18px'}}>Update Email</button></div>}
+          {emailSent?<div style={{color:W2,fontSize:13,lineHeight:1.6}}>Confirmation sent to <span style={{color:W}}>{newEmail}</span>. Click the link to confirm your new email.</div>:<div><div style={{color:W3,fontSize:12,lineHeight:1.6,marginBottom:12}}>Current: <span style={{color:W2}}>{userEmail}</span></div><input value={newEmail} onChange={function(e){setNewEmail(e.target.value);}} placeholder="New email address" type="email" autoCapitalize="none" autoCorrect="off" spellCheck="false" style={{...inp,marginBottom:12}}/><button className="bg" onClick={handleChangeEmail} style={{width:'auto',padding:'10px 18px'}}>Update Email</button></div>}
         </div>
       </Card>)}
       <Card style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
