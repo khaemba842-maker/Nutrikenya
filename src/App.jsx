@@ -317,6 +317,15 @@ function Onboard(props){
       props.onDone({name:a.name||props.uname,age:parseInt(a.age)||25,sex:(a.sex==='Male'||a.sex==='Mume')?'male':'female',weight:parseFloat(a.weight)||70,height:parseFloat(a.height)||170,goal:goal,speed:speed,activity:Math.max(0,actIdx<0?2:actIdx),workoutDays:parseInt(a.workoutDays)||3,workoutType:a.workoutType,restrictions:a.restrictions||'None',targetWeight:parseFloat(a.targetWeight)||0});
     } else {setStep(function(s){return s+1;});}
   }
+  function goBack(){
+    var prevStep=step-1,prevQ=QS[prevStep],prevAns=ans[prevQ.id];
+    if(prevQ.type==='height'){
+      setHtUnit('cm');setVal(prevAns!==undefined?String(prevAns):'');setHtFt('');setHtIn('');
+    } else {
+      setVal(prevAns!==undefined?String(prevAns):'');
+    }
+    setStep(prevStep);
+  }
   var bigNum={flex:1,padding:'0 0 14px',background:'none',border:'none',borderBottom:'1px solid '+BD2,color:W,fontSize:48,fontWeight:700,outline:'none',letterSpacing:'-0.04em',fontFamily:FF,textAlign:'center'};
   return(
     <div className="screen-fixed" style={{display:'flex',flexDirection:'column',fontFamily:FF,padding:'0 24px'}}>
@@ -334,7 +343,7 @@ function Onboard(props){
           {q.type==='opts'&&(<div style={{flex:1,overflowY:'auto',display:'flex',flexDirection:'column',gap:8,paddingBottom:8}}>{(sw?q.sw:q.opts).map(function(opt,i){return(<button key={i} className="ob" onClick={function(){next(q.opts[i]);}}><span style={{lineHeight:1.35}}>{opt}</span><IcArr/></button>);})}</div>)}
         </div>
       </div>
-      <div style={{paddingBottom:'calc(16px + env(safe-area-inset-bottom))',paddingTop:12,flexShrink:0}}>{step>0?<button className="bg" onClick={function(){setStep(function(s){return s-1;});setVal('');}} style={{width:'auto',padding:'8px 16px'}}>← BACK</button>:<div style={{height:38}}/>}</div>
+      <div style={{paddingBottom:'calc(16px + env(safe-area-inset-bottom))',paddingTop:12,flexShrink:0}}>{step>0?<button className="bg" onClick={goBack} style={{width:'auto',padding:'8px 16px'}}>← BACK</button>:<div style={{height:38}}/>}</div>
     </div>
   );
 }
@@ -634,7 +643,7 @@ function Scan(props){
 
 // ── METRICS ───────────────────────────────────────────────
 function Metrics(props){
-  var profile=props.profile,metrics=props.metrics,setMetrics=props.setMetrics,score=props.score,lang=props.lang,showToast=props.showToast,userId=props.userId,targets=props.targets,setTargets=props.setTargets;
+  var profile=props.profile,setProfile=props.setProfile,metrics=props.metrics,setMetrics=props.setMetrics,score=props.score,lang=props.lang,showToast=props.showToast,userId=props.userId,targets=props.targets,setTargets=props.setTargets;
   var [form,setForm]=useState(false);
   var [nw,setNw]=useState('');
   var [meas,setMeas]=useState({waist:'',chest:'',hips:'',neck:''});
@@ -642,12 +651,19 @@ function Metrics(props){
   var sw=lang==='sw';
   async function save(){
     if(!nw)return;
-    var entry=Object.assign({date:new Date().toLocaleDateString('en-KE'),weight:parseFloat(nw)},meas);
+    var newWeight=parseFloat(nw);
+    var entry=Object.assign({date:new Date().toLocaleDateString('en-KE'),weight:newWeight},meas);
     setMetrics(function(m){return m.concat([entry]);});
+    // Keep profile.weight current — it feeds the BMR/maintenance calc behind
+    // Smart Recalibration and is shown on the Profile screen, so a stale
+    // onboarding-day weight would silently skew both over time.
+    setProfile(function(p){return Object.assign({},p,{weight:newWeight});});
     if(userId){
       try{
-        var res=await supabase.from('body_metrics').insert({user_id:userId,date:today(),weight:parseFloat(nw)||null,waist:parseFloat(meas.waist)||null,chest:parseFloat(meas.chest)||null,hips:parseFloat(meas.hips)||null,neck:parseFloat(meas.neck)||null});
+        var res=await supabase.from('body_metrics').insert({user_id:userId,date:today(),weight:newWeight||null,waist:parseFloat(meas.waist)||null,chest:parseFloat(meas.chest)||null,hips:parseFloat(meas.hips)||null,neck:parseFloat(meas.neck)||null});
         if(res.error)throw res.error;
+        var pRes=await supabase.from('profiles').update({weight:newWeight}).eq('id',userId);
+        if(pRes.error)throw pRes.error;
         showToast('Metrics saved');
       }catch(e){console.error(e);showToast("Couldn't save — logged locally only");}
     }else{showToast('Metrics saved');}
@@ -980,7 +996,7 @@ export default function NutriKenya(){
         {tab==='dashboard'&&<Dash profile={profile} targets={targets} log={log} water={water} setWater={setWater} score={score} lang={lang} streak={streak} fasting={fasting} setFasting={setFasting} fStart={fStart} setFStart={setFStart} showToast={showToast} userId={user&&user.id} foods={foods}/>}
         {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants} recentFoods={recentFoods} addToLog={addToLog}/>}
         {tab==='scan'&&<Scan addToLog={addToLog} lang={lang} showToast={showToast}/>}
-        {tab==='metrics'&&<Metrics profile={profile} targets={targets} setTargets={setTargets} metrics={metrics} setMetrics={setMetrics} score={score} lang={lang} showToast={showToast} userId={user&&user.id}/>}
+        {tab==='metrics'&&<Metrics profile={profile} setProfile={setProfile} targets={targets} setTargets={setTargets} metrics={metrics} setMetrics={setMetrics} score={score} lang={lang} showToast={showToast} userId={user&&user.id}/>}
         {tab==='profile'&&<Profile profile={profile} targets={targets} lang={lang} setLang={setLang} score={score} streak={streak} setScore={setScore} onReset={reset} showToast={showToast} userEmail={user&&user.email} userId={user&&user.id}/>}
       </div>
       <Nav tab={tab} setTab={setTab} lang={lang}/>
