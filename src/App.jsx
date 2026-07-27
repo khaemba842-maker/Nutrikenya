@@ -455,6 +455,105 @@ function Dash(props){
 }
 
 // ── LOG ───────────────────────────────────────────────────
+// ── BARCODE SCAN ──────────────────────────────────────────
+// Looks up a scanned barcode against Open Food Facts (free, no API key) and
+// normalizes its per-100g nutriments into the same food-item shape used
+// everywhere else in the app.
+async function lookupBarcode(code){
+  var data=await fetchJSON('https://world.openfoodfacts.org/api/v2/product/'+encodeURIComponent(code)+'.json?fields=product_name,generic_name,nutriments',{},15000);
+  if(!data||data.status!==1||!data.product)return null;
+  var p=data.product,n=p.nutriments||{};
+  var name=p.product_name||p.generic_name;
+  if(!name)return null;
+  var kcal100=n['energy-kcal_100g'];
+  if(kcal100===undefined&&n.energy_100g!==undefined)kcal100=n.energy_100g/4.184;
+  return{n:name,s:name,e:Math.round(kcal100||0),p:Math.round((n.proteins_100g||0)*10)/10,c:Math.round((n.carbohydrates_100g||0)*10)/10,f:Math.round((n.fat_100g||0)*10)/10,pr:'100g',cat:'Barcode'};
+}
+function BarcodeScan(props){
+  var onFound=props.onFound,showToast=props.showToast,lang=props.lang;
+  var sw=lang==='sw';
+  var supported=typeof window!=='undefined'&&'BarcodeDetector' in window;
+  var [scanning,setScanning]=useState(false);
+  var [loading,setLoading]=useState(false);
+  var [manualCode,setManualCode]=useState('');
+  var [camError,setCamError]=useState(null);
+  var videoRef=useRef();
+
+  async function handleCode(code){
+    setScanning(false);setLoading(true);setCamError(null);
+    try{
+      var product=await lookupBarcode(code);
+      if(!product){showToast('No product found for that barcode.');}else{onFound(product);}
+    }catch(e){console.error(e);logError('barcode-lookup',e);showToast(e.message&&e.message.indexOf('timed out')>-1?e.message:'Lookup failed. Check your connection.');}
+    setLoading(false);
+  }
+
+  useEffect(function(){
+    if(!supported||!scanning)return;
+    var stopped=false,stream=null,raf=null;
+    (async function(){
+      try{
+        stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+        if(stopped){stream.getTracks().forEach(function(t){t.stop();});return;}
+        if(videoRef.current){videoRef.current.srcObject=stream;await videoRef.current.play();}
+        var detector=new window.BarcodeDetector({formats:['ean_13','ean_8','upc_a','upc_e','code_128']});
+        function loop(){
+          if(stopped)return;
+          if(videoRef.current&&videoRef.current.readyState>=2){
+            detector.detect(videoRef.current).then(function(codes){
+              if(stopped)return;
+              if(codes&&codes.length>0){stopped=true;handleCode(codes[0].rawValue);}
+              else{raf=requestAnimationFrame(loop);}
+            }).catch(function(){if(!stopped)raf=requestAnimationFrame(loop);});
+          }else{raf=requestAnimationFrame(loop);}
+        }
+        loop();
+      }catch(camErr){
+        console.error(camErr);
+        if(!stopped){setCamError('Camera access denied or unavailable.');setScanning(false);}
+      }
+    })();
+    return function(){
+      stopped=true;
+      if(raf)cancelAnimationFrame(raf);
+      if(stream)stream.getTracks().forEach(function(t){t.stop();});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[scanning,supported]);
+
+  if(!supported){
+    return(
+      <div>
+        <div style={{color:W2,fontSize:12,marginBottom:14,lineHeight:1.6}}>{sw?'Kusoma bakoodi kwa kamera hakuungwi mkono na kivinjari hiki. Andika nambari ya bakoodi badala yake.':"Live barcode scanning isn't supported on this browser. Enter the barcode number instead."}</div>
+        <div style={{display:'flex',gap:8}}>
+          <input value={manualCode} onChange={function(e){setManualCode(e.target.value.replace(/\D/g,''));}} onKeyDown={function(e){if(e.key==='Enter'&&manualCode)handleCode(manualCode);}} placeholder="e.g. 6009xxxxxxxxx" inputMode="numeric" style={{flex:1,padding:'11px 13px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF}}/>
+          <button className="bg" disabled={!manualCode||loading} onClick={function(){handleCode(manualCode);}} style={{width:'auto',padding:'0 18px'}}>{loading?'...':'Look Up'}</button>
+        </div>
+      </div>
+    );
+  }
+  return(
+    <div>
+      {!scanning&&!loading&&(
+        <div onClick={function(){setCamError(null);setScanning(true);}} style={{border:'1px dashed '+BD2,borderRadius:16,padding:44,textAlign:'center',cursor:'pointer',marginBottom:12}}>
+          <div style={{display:'flex',justifyContent:'center',marginBottom:14}}><IcScan s={32} c={W3}/></div>
+          <div style={{color:W,fontSize:15,fontWeight:600,marginBottom:5}}>{sw?'Gusa kuanza kusoma bakoodi':'Tap to scan a barcode'}</div>
+          <div style={{color:W3,fontSize:12}}>{sw?'Elekeza kamera kwenye bakoodi':'Point your camera at a product barcode'}</div>
+        </div>
+      )}
+      {scanning&&(
+        <div style={{position:'relative',borderRadius:16,overflow:'hidden',marginBottom:12,background:'#000'}}>
+          <video ref={videoRef} muted playsInline style={{width:'100%',display:'block',maxHeight:280,objectFit:'cover'}}/>
+          <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}><div style={{width:'72%',height:70,border:'2px solid rgba(255,255,255,0.7)',borderRadius:8}}/></div>
+          <button className="bg" onClick={function(){setScanning(false);}} style={{position:'absolute',bottom:12,left:12,right:12,width:'auto'}}>Cancel</button>
+        </div>
+      )}
+      {loading&&(<Card><div style={{color:W2,fontSize:11,letterSpacing:'0.12em',textTransform:'uppercase',marginBottom:12,textAlign:'center'}}>Looking up product</div><div style={{height:1,background:C3,overflow:'hidden',position:'relative',borderRadius:1}}><div style={{position:'absolute',top:0,left:0,height:'100%',background:W,animation:'scanLine 1.4s ease-in-out infinite',width:'45%',borderRadius:1}}/></div></Card>)}
+      {camError&&<div style={{background:C1,border:'1px solid '+BD2,borderRadius:12,padding:14,color:W2,marginBottom:12,fontSize:13,lineHeight:1.5}}>{camError}</div>}
+    </div>
+  );
+}
+
 function Log(props){
   var log=props.log,setLog=props.setLog,lang=props.lang,showToast=props.showToast,userId=props.userId,foods=props.foods||[],restaurants=props.restaurants||[],recentFoods=props.recentFoods||[],addToLog=props.addToLog;
   var [meal,setMeal]=useState('breakfast');
@@ -573,7 +672,7 @@ function Log(props){
       {adding?(
         <Card>
           <div style={{display:'flex',gap:6,marginBottom:16,overflowX:'auto',paddingBottom:2}}>
-            {[{v:'foods',l:sw?'Vyakula':'Foods'},{v:'restaurant',l:sw?'Migahawa':'Restaurants'},{v:'quick',l:sw?'Andika':'Quick Add'}].map(function(t){var active=src===t.v;return(<button key={t.v} className="pill" onClick={function(){setSrc(t.v);}} style={{border:'1px solid '+(active?W:BD),background:active?W:'transparent',color:active?BG:W2,padding:'7px 12px',flexShrink:0}}>{t.l}</button>);})}
+            {[{v:'foods',l:sw?'Vyakula':'Foods'},{v:'restaurant',l:sw?'Migahawa':'Restaurants'},{v:'quick',l:sw?'Andika':'Quick Add'},{v:'barcode',l:sw?'Bakoodi':'Barcode'}].map(function(t){var active=src===t.v;return(<button key={t.v} className="pill" onClick={function(){setSrc(t.v);}} style={{border:'1px solid '+(active?W:BD),background:active?W:'transparent',color:active?BG:W2,padding:'7px 12px',flexShrink:0}}>{t.l}</button>);})}
           </div>
           {src==='foods'&&(
             <div>
@@ -639,6 +738,7 @@ function Log(props){
               {quickItems&&quickItems.map(function(item,i,arr){return(<div key={i}><button className="fr" onClick={function(){openQty({n:item.food,s:item.food,e:item.calories,p:item.protein,c:item.carbs,f:item.fat,pr:item.portion,cat:'Quick Add'});setQuickItems(null);setQuickText('');}}><div><div style={{color:W,fontSize:14,fontWeight:500}}>{item.food}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{item.portion}</div></div><div style={{textAlign:'right',flexShrink:0,marginLeft:10}}><div style={{color:W,fontSize:13,fontWeight:600}}>{item.calories} kcal</div><div style={{color:W2,fontSize:11}}>{item.protein}g P</div></div></button>{i<arr.length-1&&<Sep/>}</div>);})}
             </div>
           )}
+          {src==='barcode'&&<BarcodeScan lang={lang} showToast={showToast} onFound={openQty}/>}
           <div style={{marginTop:16}}><button className="bg" onClick={function(){setAdding(false);setSrc('foods');setSearch('');setRestSearch('');setOpenRest(null);setRestGrp('All');setQuickText('');setQuickItems(null);setQuickError(null);}}>Cancel</button></div>
         </Card>
       ):(
@@ -829,12 +929,11 @@ function Profile(props){
   var [newEmail,setNewEmail]=useState('');
   var [emailSent,setEmailSent]=useState(false);
   var [passSent,setPassSent]=useState(false);
-  var [pendingSync,setPendingSync]=useState(0);
+  var [pendingSync,setPendingSync]=useState(function(){return queueLength();});
   var [exporting,setExporting]=useState(false);
   var sw=lang==='sw';
   var inp={width:'100%',padding:'0 0 12px',background:'none',border:'none',borderBottom:'1px solid '+BD2,color:W,outline:'none',boxSizing:'border-box',fontFamily:FF,fontSize:18};
   useEffect(function(){
-    setPendingSync(queueLength());
     return onQueueChange(setPendingSync);
   },[]);
   async function genPlan(){

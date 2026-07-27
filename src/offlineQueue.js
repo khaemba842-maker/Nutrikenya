@@ -1,10 +1,10 @@
 var KEY = 'nutrikenya_offline_queue_v1'
 
 function readQueue () {
-  try { return JSON.parse(localStorage.getItem(KEY) || '[]') } catch (e) { return [] }
+  try { return JSON.parse(localStorage.getItem(KEY) || '[]') } catch { return [] }
 }
 function writeQueue (q) {
-  try { localStorage.setItem(KEY, JSON.stringify(q)) } catch (e) {}
+  try { localStorage.setItem(KEY, JSON.stringify(q)) } catch { /* storage unavailable — queue is best-effort */ }
   notify()
 }
 
@@ -63,7 +63,7 @@ export async function flushQueue () {
         var res = await fn(item.payload)
         if (res && res.error) throw res.error
         q.shift(); writeQueue(q); q = readQueue()
-      } catch (e) {
+      } catch {
         break
       }
     }
