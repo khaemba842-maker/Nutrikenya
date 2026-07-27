@@ -568,7 +568,7 @@ function Log(props){
           {src==='quick'&&(
             <div>
               <div style={{color:W2,fontSize:12,marginBottom:10,lineHeight:1.5}}>{sw?'Eleza ulichokula, mfano "chapati mbili na chai"':'Describe what you ate, e.g. "2 chapatis and a cup of tea"'}</div>
-              <textarea value={quickText} onChange={function(e){setQuickText(e.target.value);}} autoFocus rows={2} placeholder={sw?'Andika hapa...':'Type here...'} style={{width:'100%',padding:'11px 13px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:10,resize:'none'}}/>
+              <textarea value={quickText} onChange={function(e){setQuickText(e.target.value);}} autoFocus rows={2} maxLength={500} placeholder={sw?'Andika hapa...':'Type here...'} style={{width:'100%',padding:'11px 13px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:10,resize:'none'}}/>
               <button className="bp" onClick={quickAdd} disabled={!quickText.trim()||quickLoading} style={{marginBottom:12}}>{quickLoading?(sw?'Inachambua...':'Analyzing...'):(sw?'Chambua kwa AI':'Parse with AI')}</button>
               {quickLoading&&(<div style={{height:1,background:C3,overflow:'hidden',position:'relative',borderRadius:1,marginBottom:12}}><div style={{position:'absolute',top:0,left:0,height:'100%',background:W,animation:'scanLine 1.4s ease-in-out infinite',width:'45%',borderRadius:1}}/></div>)}
               {quickError&&<div style={{color:W2,fontSize:13,marginBottom:12}}>{quickError}</div>}
