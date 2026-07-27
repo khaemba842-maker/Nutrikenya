@@ -911,6 +911,10 @@ export default function NutriKenya(){
     }).catch(function(e){console.error('Failed to load foods/restaurants:',e);});
 
     return function(){sub.data.subscription.unsubscribe();};
+    // handleAuthDone only closes over stable state setters/refs and pure
+    // helpers, so a fresh render's copy behaves identically — intentionally
+    // omitted so this mount-only effect doesn't resubscribe every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
 
   async function addToLog(meal,food){
@@ -962,6 +966,15 @@ export default function NutriKenya(){
         if(mRes.data&&mRes.data.length>0){setMetrics(mRes.data.map(function(m){return{date:new Date(m.date).toLocaleDateString('en-KE'),weight:m.weight,waist:m.waist,chest:m.chest,hips:m.hips,neck:m.neck};}));}
         if(d.water_date===today()&&d.water_logged){setWater(d.water_logged);}
         setScreen('app');return;
+      }
+      if(pRes.error&&pRes.error.code!=='PGRST116'){
+        // PGRST116 = no matching row, i.e. a genuinely new user who should
+        // onboard. Anything else (network blip, RLS hiccup) is a transient
+        // failure — routing to onboarding here would let handleOnboard's
+        // upsert silently overwrite an existing user's real profile.
+        authHandled.current=false;
+        showToast("Couldn't load your profile. Check your connection and try again.");
+        setScreen('auth');return;
       }
     }
     setScreen('onboard');
