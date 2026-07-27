@@ -410,6 +410,7 @@ function Log(props){
   var [restGrp,setRestGrp]=useState('All');
   var [pending,setPending]=useState(null);
   var [qty,setQty]=useState(1);
+  var [logging,setLogging]=useState(false);
   var [quickText,setQuickText]=useState('');
   var [quickLoading,setQuickLoading]=useState(false);
   var [quickItems,setQuickItems]=useState(null);
@@ -426,8 +427,10 @@ function Log(props){
     return r.name.toLowerCase().includes(q)||r.items.some(function(item){return item.n.toLowerCase().includes(q);});
   });
   async function add(food){
+    if(logging)return;
+    setLogging(true);
     await addToLog(meal,food);
-    showToast(food.n+' added');setSearch('');setAdding(false);setPending(null);setQty(1);
+    showToast(food.n+' added');setSearch('');setAdding(false);setPending(null);setQty(1);setLogging(false);
   }
   function openQty(food){setPending(food);setQty(1);}
   function scaledFood(food,q){
@@ -482,7 +485,7 @@ function Log(props){
         <Card>
           <Lbl ch={sw?'Vilivyotumika Hivi Karibuni':'Recent'} style={{marginBottom:12}}/>
           <div style={{display:'flex',gap:8,overflowX:'auto',paddingBottom:2}}>
-            {recentFoods.map(function(f,i){return(<button key={f.n+i} className="pill" onClick={function(){add(Object.assign({},f));}} style={{border:'1px solid '+BD,background:C2,color:W,padding:'9px 14px',flexShrink:0,textAlign:'left',display:'flex',flexDirection:'column',gap:2}}><span style={{fontWeight:600}}>{sw?f.s:f.n}</span><span style={{color:W3,fontSize:10,fontWeight:400}}>{f.e} kcal</span></button>);})}
+            {recentFoods.map(function(f,i){return(<button key={f.n+i} className="pill" disabled={logging} onClick={function(){add(Object.assign({},f));}} style={{border:'1px solid '+BD,background:C2,color:W,padding:'9px 14px',flexShrink:0,textAlign:'left',display:'flex',flexDirection:'column',gap:2,opacity:logging?0.5:1}}><span style={{fontWeight:600}}>{sw?f.s:f.n}</span><span style={{color:W3,fontSize:10,fontWeight:400}}>{f.e} kcal</span></button>);})}
           </div>
         </Card>
       )}
@@ -499,7 +502,7 @@ function Log(props){
             {[{l:'Cal',v:Math.round(pending.e*qty)},{l:'Protein',v:Math.round(pending.p*qty)},{l:'Carbs',v:Math.round(pending.c*qty)},{l:'Fat',v:Math.round(pending.f*qty)}].map(function(m){return(<div key={m.l} style={{background:C2,border:'1px solid '+BD,borderRadius:10,padding:'10px 6px',textAlign:'center'}}><Lbl ch={m.l} style={{marginBottom:4,fontSize:9}}/><div style={{color:W,fontSize:14,fontWeight:700}}>{m.v}</div></div>);})}
           </div>
           <div style={{display:'flex',gap:8}}>
-            <button className="bp" onClick={function(){add(scaledFood(pending,qty));}}>{sw?'Ongeza':'Add'}</button>
+            <button className="bp" disabled={logging} onClick={function(){add(scaledFood(pending,qty));}}>{logging?(sw?'Inaongeza...':'Adding...'):(sw?'Ongeza':'Add')}</button>
             <button className="bg" onClick={function(){setPending(null);setQty(1);}}>{sw?'Ghairi':'Cancel'}</button>
           </div>
         </Card>
