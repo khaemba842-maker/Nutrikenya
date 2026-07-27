@@ -1,4 +1,6 @@
 import { supabase } from './supabase'
+import { logError } from './errorLog'
+import { queueWrite, cancelQueued, registerHandler, installOnlineFlush, queueLength, onQueueChange } from './offlineQueue'
 import { useState, useRef, useEffect } from "react";
 
 const BG='#070707',C1='#0D0D0D',C2='#141414',C3='#1C1C1C',C4='#252525';
@@ -426,12 +428,13 @@ function Dash(props){
   function fmtT(s){return String(Math.floor(s/3600)).padStart(2,'0')+':'+String(Math.floor((s%3600)/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');}
   async function handleWater(v){
     var nw=Math.min(water+v,6000);setWater(nw);showToast('+'+v+'ml water logged');
-    if(userId){
-      try{
-        var res=await supabase.from('profiles').update({water_logged:nw,water_date:today()}).eq('id',userId);
-        if(res.error)throw res.error;
-      }catch(e){console.error(e);showToast("Couldn't sync water — logged locally only");}
-    }
+    if(!userId)return;
+    var payload={userId:userId,water_logged:nw,water_date:today()};
+    if(!navigator.onLine){queueWrite('water-update',payload);return;}
+    try{
+      var res=await supabase.from('profiles').update({water_logged:nw,water_date:today()}).eq('id',userId);
+      if(res.error)throw res.error;
+    }catch(e){console.error(e);logError('water-update',e,userId);queueWrite('water-update',payload);}
   }
   var highProtein=foods.filter(function(f){return f.p>=15;}).slice(0,3);
   return(
@@ -498,12 +501,19 @@ function Log(props){
   async function rm(key,k){
     var item=log[key].find(function(x){return x._k===k;});
     setLog(function(l){var n=Object.assign({},l);n[key]=l[key].filter(function(x){return x._k!==k;});return n;});
-    if(item&&item.db_id&&userId){
-      try{
-        var res=await supabase.from('food_logs').delete().eq('id',item.db_id);
-        if(res.error)throw res.error;
-      }catch(e){console.error(e);showToast("Couldn't delete — try again");}
+    if(!item||!userId)return;
+    if(!item.db_id){
+      // Never made it to the server (still queued offline) — cancel the
+      // pending insert instead of issuing a delete for a row that may not
+      // exist yet.
+      cancelQueued(function(q){return q.label==='food-log-insert'&&q.payload._k===k;});
+      return;
     }
+    if(!navigator.onLine){queueWrite('food-log-delete',{id:item.db_id});return;}
+    try{
+      var res=await supabase.from('food_logs').delete().eq('id',item.db_id);
+      if(res.error)throw res.error;
+    }catch(e){console.error(e);logError('food-log-delete',e,userId);queueWrite('food-log-delete',{id:item.db_id});showToast("Offline — delete will sync automatically");}
   }
   async function quickAdd(){
     if(!quickText.trim())return;
@@ -715,13 +725,25 @@ function Metrics(props){
     // onboarding-day weight would silently skew both over time.
     setProfile(function(p){return Object.assign({},p,{weight:newWeight});});
     if(userId){
-      try{
-        var res=await supabase.from('body_metrics').insert({user_id:userId,date:today(),weight:newWeight||null,waist:parseFloat(meas.waist)||null,chest:parseFloat(meas.chest)||null,hips:parseFloat(meas.hips)||null,neck:parseFloat(meas.neck)||null});
-        if(res.error)throw res.error;
-        var pRes=await supabase.from('profiles').update({weight:newWeight}).eq('id',userId);
-        if(pRes.error)throw pRes.error;
-        showToast('Metrics saved');
-      }catch(e){console.error(e);showToast("Couldn't save — logged locally only");}
+      var metricPayload={user_id:userId,date:today(),weight:newWeight||null,waist:parseFloat(meas.waist)||null,chest:parseFloat(meas.chest)||null,hips:parseFloat(meas.hips)||null,neck:parseFloat(meas.neck)||null};
+      if(!navigator.onLine){
+        queueWrite('body-metrics-insert',metricPayload);
+        queueWrite('profile-weight-update',{userId:userId,weight:newWeight});
+        showToast('Saved offline — will sync automatically');
+      }else{
+        try{
+          var res=await supabase.from('body_metrics').insert(metricPayload);
+          if(res.error)throw res.error;
+          var pRes=await supabase.from('profiles').update({weight:newWeight}).eq('id',userId);
+          if(pRes.error)throw pRes.error;
+          showToast('Metrics saved');
+        }catch(e){
+          console.error(e);logError('body-metrics-save',e,userId);
+          queueWrite('body-metrics-insert',metricPayload);
+          queueWrite('profile-weight-update',{userId:userId,weight:newWeight});
+          showToast("Couldn't save — will retry automatically");
+        }
+      }
     }else{showToast('Metrics saved');}
     setNw('');setMeas({waist:'',chest:'',hips:'',neck:''});setForm(false);
   }
@@ -761,7 +783,7 @@ function Metrics(props){
         var res=await supabase.from('profiles').update({calories:newTargets.calories,protein:newTargets.protein,carbs:newTargets.carbs,fat:newTargets.fat}).eq('id',userId);
         if(res.error)throw res.error;
         showToast('Targets updated');
-      }catch(e){console.error(e);showToast("Couldn't sync target — try again later");}
+      }catch(e){console.error(e);logError('target-update',e,userId);showToast("Couldn't sync target — try again later");}
     }else{showToast('Targets updated');}
     setRecal(null);
   }
@@ -807,8 +829,14 @@ function Profile(props){
   var [newEmail,setNewEmail]=useState('');
   var [emailSent,setEmailSent]=useState(false);
   var [passSent,setPassSent]=useState(false);
+  var [pendingSync,setPendingSync]=useState(0);
+  var [exporting,setExporting]=useState(false);
   var sw=lang==='sw';
   var inp={width:'100%',padding:'0 0 12px',background:'none',border:'none',borderBottom:'1px solid '+BD2,color:W,outline:'none',boxSizing:'border-box',fontFamily:FF,fontSize:18};
+  useEffect(function(){
+    setPendingSync(queueLength());
+    return onQueueChange(setPendingSync);
+  },[]);
   async function genPlan(){
     setPlanLoad(true);setShowPlan(true);setPlan(null);
     try{
@@ -832,11 +860,42 @@ function Profile(props){
     if(res.error){showToast(res.error.message);return;}
     setEmailSent(true);showToast('Confirmation sent to '+cleanEmail);
   }
+  async function exportData(){
+    if(!userId){showToast('Sign in to export your data');return;}
+    setExporting(true);
+    try{
+      var results=await Promise.all([
+        supabase.from('food_logs').select('date,meal,food_name,food_name_sw,calories,protein,carbs,fat,portion').eq('user_id',userId).order('date'),
+        supabase.from('body_metrics').select('date,weight,waist,chest,hips,neck').eq('user_id',userId).order('date'),
+      ]);
+      if(results[0].error)throw results[0].error;
+      if(results[1].error)throw results[1].error;
+      var logs=results[0].data||[],metrics=results[1].data||[];
+      var cols=['type','date','meal','food_name','food_name_sw','calories','protein','carbs','fat','portion','weight','waist','chest','hips','neck'];
+      function esc(v){
+        if(v===null||v===undefined)return '';
+        var s=String(v);
+        return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;
+      }
+      var rows=[cols.join(',')];
+      logs.forEach(function(r){rows.push(cols.map(function(c){return c==='type'?'food_log':esc(r[c]);}).join(','));});
+      metrics.forEach(function(r){rows.push(cols.map(function(c){return c==='type'?'body_metric':esc(r[c]);}).join(','));});
+      var blob=new Blob([rows.join('\n')],{type:'text/csv;charset=utf-8;'});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement('a');
+      a.href=url;a.download='nutrikenya-export-'+today()+'.csv';
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Export downloaded');
+    }catch(e){console.error(e);logError('csv-export',e,userId);showToast("Couldn't export — try again");}
+    setExporting(false);
+  }
   var goalLabel={lose:'Fat Loss',gain:'Muscle Gain',recomp:'Body Recomp',maintain:'Maintenance'}[profile.goal];
   var actLabels=['Sedentary','Light','Moderate','Very Active','Extreme'];
   return(
     <div className="page" style={{padding:'24px 20px 100px',fontFamily:FF}}>
       <div style={{fontSize:24,fontWeight:800,color:W,letterSpacing:'-0.03em',marginBottom:20}}>{sw?'Wasifu':'Profile'}</div>
+      {pendingSync>0&&(<div style={{background:C2,border:'1px solid '+BD,borderRadius:10,padding:'10px 14px',color:W2,fontSize:12,marginBottom:12,lineHeight:1.5}}>{pendingSync} {pendingSync===1?'change':'changes'} waiting to sync — will finish automatically when you're back online.</div>)}
       <Card>
         <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:18}}>
           <div style={{width:48,height:48,borderRadius:24,background:W,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,fontWeight:900,color:BG,flexShrink:0}}>{(profile.name||'U')[0].toUpperCase()}</div>
@@ -846,6 +905,7 @@ function Profile(props){
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:14}}>{[{l:'Goal',v:goalLabel},{l:'Activity',v:actLabels[profile.activity]||'Moderate'},{l:'Training',v:(profile.workoutType||'Mixed').split(' ').slice(0,2).join(' ')},{l:'Diet',v:profile.restrictions||'No restrictions'}].map(function(x,i){return(<div key={i} style={{background:C2,border:'1px solid '+BD,borderRadius:10,padding:'11px'}}><Lbl ch={x.l} style={{marginBottom:4}}/><div style={{color:W,fontSize:12,fontWeight:500,lineHeight:1.3}}>{x.v}</div></div>);})}</div>
       </Card>
       <Card><Lbl ch="Daily Targets" style={{marginBottom:14}}/>{[{l:'Calories',v:targets.calories+' kcal'},{l:'Protein',v:targets.protein+'g'},{l:'Carbs',v:targets.carbs+'g'},{l:'Fat',v:targets.fat+'g'},{l:'Water',v:targets.water+'ml'}].map(function(t,i,arr){return(<div key={i}><div style={{display:'flex',justifyContent:'space-between',padding:'10px 0'}}><span style={{color:W2,fontSize:13}}>{t.l}</span><span style={{color:W,fontSize:13,fontWeight:600}}>{t.v}</span></div>{i<arr.length-1&&<Sep/>}</div>);})}</Card>
+      <button className="ic" onClick={exportData} disabled={exporting} style={{marginBottom:10,opacity:exporting?0.6:1}}><span style={{letterSpacing:'-0.01em'}}>{exporting?'Exporting...':'Export My Data (CSV)'}</span><IcArr c={W2}/></button>
       <button className="ic" onClick={function(){setShowAccount(function(v){return!v;});}} style={{marginBottom:10}}><span style={{letterSpacing:'-0.01em'}}>Account Settings</span><IcArr c={W2}/></button>
       {showAccount&&(<Card>
         <Lbl ch="Password" style={{marginBottom:10}}/>
@@ -969,12 +1029,35 @@ export default function NutriKenya(){
       setRestaurants(Object.values(map));
     }).catch(function(e){console.error('Failed to load foods/restaurants:',e);});
 
+    // Wire the offline queue: handlers are the actual network calls replayed
+    // on flush (when connectivity returns), registered once since setLog is
+    // a stable setState identity and safe to close over from a mount effect.
+    registerHandler('food-log-insert',insertFoodLogRow);
+    registerHandler('food-log-delete',function(payload){return supabase.from('food_logs').delete().eq('id',payload.id);});
+    registerHandler('water-update',function(payload){return supabase.from('profiles').update({water_logged:payload.water_logged,water_date:payload.water_date}).eq('id',payload.userId);});
+    registerHandler('body-metrics-insert',function(payload){return supabase.from('body_metrics').insert(payload);});
+    registerHandler('profile-weight-update',function(payload){return supabase.from('profiles').update({weight:payload.weight}).eq('id',payload.userId);});
+    installOnlineFlush();
+
     return function(){sub.data.subscription.unsubscribe();};
     // handleAuthDone only closes over stable state setters/refs and pure
     // helpers, so a fresh render's copy behaves identically — intentionally
     // omitted so this mount-only effect doesn't resubscribe every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
+
+  function insertFoodLogRow(payload){
+    return supabase.from('food_logs').insert(payload.row).select('id').single().then(function(res){
+      if(!res.error&&res.data&&res.data.id){
+        setLog(function(l){
+          var n=Object.assign({},l);
+          Object.keys(n).forEach(function(m){n[m]=n[m].map(function(item){return item._k===payload._k?Object.assign({},item,{db_id:res.data.id}):item;});});
+          return n;
+        });
+      }
+      return res;
+    });
+  }
 
   async function addToLog(meal,food){
     var k=Date.now();
@@ -983,15 +1066,15 @@ export default function NutriKenya(){
     pushRecent(food);
     setScore(function(s){var ns=Math.min(s+2,100);if(user&&user.id){supabase.from('profiles').update({score:ns}).eq('id',user.id);}return ns;});
     if(isFirstToday){setStreak(function(s){return s+1;});}
-    if(user&&user.id){
-      try{
-        var res=await supabase.from('food_logs').insert({user_id:user.id,date:today(),meal:meal,food_name:food.n,food_name_sw:food.s||food.n,calories:food.e||0,protein:food.p||0,carbs:food.c||0,fat:food.f||0,portion:food.pr||''}).select('id').single();
-        if(res.error)throw res.error;
-        if(res.data&&res.data.id){setLog(function(l){var n=Object.assign({},l);n[meal]=l[meal].map(function(item){return item._k===k?Object.assign({},item,{db_id:res.data.id}):item;});return n;});}
-      }catch(e){
-        console.error(e);
-        showToast("Couldn't save — logged locally only");
-      }
+    if(!user||!user.id)return;
+    var payload={_k:k,row:{user_id:user.id,date:today(),meal:meal,food_name:food.n,food_name_sw:food.s||food.n,calories:food.e||0,protein:food.p||0,carbs:food.c||0,fat:food.f||0,portion:food.pr||''}};
+    if(!navigator.onLine){queueWrite('food-log-insert',payload);showToast(food.n+" added — will sync when back online");return;}
+    try{
+      var res=await insertFoodLogRow(payload);
+      if(res.error)throw res.error;
+    }catch(e){
+      console.error(e);logError('food-log-insert',e,user.id);
+      queueWrite('food-log-insert',payload);
     }
   }
 
@@ -1045,7 +1128,7 @@ export default function NutriKenya(){
       try{
         var res=await supabase.from('profiles').upsert({id:user.id,name:pr.name,age:pr.age,sex:pr.sex,weight:pr.weight,height:pr.height,goal:pr.goal,speed:pr.speed,activity:pr.activity,workout_type:pr.workoutType,restrictions:pr.restrictions,target_weight:pr.targetWeight||null,calories:t.calories,protein:t.protein,carbs:t.carbs,fat:t.fat,water:t.water,score:score});
         if(res.error)throw res.error;
-      }catch(e){console.error(e);showToast("Couldn't save your profile — check your connection");}
+      }catch(e){console.error(e);logError('onboard-save',e,user.id);showToast("Couldn't save your profile — check your connection");}
     }
     setScreen('app');
   }
