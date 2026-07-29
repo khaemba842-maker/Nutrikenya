@@ -7,10 +7,13 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      workbox: {
-        skipWaiting: true,
-        clientsClaim: true,
-        cleanupOutdatedCaches: true,
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.js',
+      injectManifest: {
+        // Only precache the app shell; runtime code splitting keeps the
+        // rest small enough that a broad glob isn't needed here.
+        globPatterns: ['**/*.{js,css,html,png,svg,webmanifest}'],
       },
       manifest: {
         name: 'NutriKenya',

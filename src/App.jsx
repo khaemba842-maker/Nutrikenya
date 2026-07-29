@@ -1,4 +1,7 @@
 import { supabase } from './supabase'
+import { logError } from './errorLog'
+import { queueWrite, cancelQueued, registerHandler, installOnlineFlush, queueLength, onQueueChange } from './offlineQueue'
+import { pushSupported, getPushSubscription, subscribeToPush, unsubscribeFromPush } from './push'
 import { useState, useRef, useEffect } from "react";
 
 const BG='#070707',C1='#0D0D0D',C2='#141414',C3='#1C1C1C',C4='#252525';
@@ -257,7 +260,10 @@ function Auth(props){
           <button className="bg" onClick={function(){setMode('login');}}>LOG IN</button>
         </div>
       </div>
-      <div style={{position:'absolute',bottom:'calc(24px + env(safe-area-inset-bottom))',color:W3,fontSize:10,letterSpacing:'0.1em',textTransform:'uppercase',pointerEvents:'none'}}>Made in Kenya</div>
+      <div style={{position:'absolute',bottom:'calc(24px + env(safe-area-inset-bottom))',display:'flex',flexDirection:'column',alignItems:'center',gap:8}}>
+        <div style={{color:W3,fontSize:10,letterSpacing:'0.1em',textTransform:'uppercase',pointerEvents:'none'}}>Made in Kenya</div>
+        <div style={{fontSize:10,letterSpacing:'0.04em'}}><span onClick={function(){props.onLegal('privacy');}} style={{color:W3,cursor:'pointer'}}>Privacy</span><span style={{color:W3,margin:'0 6px'}}>·</span><span onClick={function(){props.onLegal('terms');}} style={{color:W3,cursor:'pointer'}}>Terms</span></div>
+      </div>
     </div>
   );
 
@@ -299,6 +305,48 @@ function ResetPassword(props){
   }
   if(done) return(<div className="screen-fixed" style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:40,textAlign:'center',fontFamily:FF}}><div style={{width:64,height:64,borderRadius:32,background:C2,border:'1px solid '+BD2,display:'flex',alignItems:'center',justifyContent:'center',marginBottom:28}}><svg width={28} height={28} viewBox="0 0 28 28" fill="none"><path d="M6 14L11 19L22 9" stroke={W} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"/></svg></div><div style={{color:W,fontSize:24,fontWeight:800,letterSpacing:'-0.03em',marginBottom:10}}>Password updated.</div><div style={{color:W2,fontSize:14,lineHeight:1.7,maxWidth:280}}>Your password has been changed. Taking you back now.</div></div>);
   return(<div className="screen-fixed" style={{display:'flex',flexDirection:'column',fontFamily:FF}}><div style={{padding:'calc(60px + env(safe-area-inset-top)) 24px 24px',display:'flex',flexDirection:'column',flex:1}}><div style={{maxWidth:340,width:'100%',margin:'0 auto'}}><div style={{fontSize:28,fontWeight:800,color:W,letterSpacing:'-0.03em',marginBottom:6}}>Set new password.</div><div style={{color:W2,fontSize:14,marginBottom:40,lineHeight:1.6}}>Choose a strong password for your NutriKenya account.</div><div style={{marginBottom:28}}><Lbl ch="New Password" style={{marginBottom:10}}/><input value={newPass} onChange={function(e){setNewPass(e.target.value);}} placeholder="Min. 8 characters" type="password" autoFocus style={inp}/></div><div style={{marginBottom:36}}><Lbl ch="Confirm Password" style={{marginBottom:10}}/><input value={confirm} onChange={function(e){setConfirm(e.target.value);}} onKeyDown={function(e){if(e.key==='Enter')handleReset();}} placeholder="Repeat password" type="password" style={inp}/></div><button className="bp" onClick={handleReset} disabled={loading||!newPass||!confirm}>{loading?'Updating...':'Update Password'}</button></div></div></div>);
+}
+
+// ── LEGAL (PRIVACY / TERMS) ────────────────────────────────
+var PRIVACY_SECTIONS=[
+  {h:'What NutriKenya is',b:"NutriKenya is a nutrition-tracking app for Kenya. This policy explains what information we collect, why, and the rights you have over it under Kenya's Data Protection Act, 2019."},
+  {h:'Information we collect',b:'Account info (email, password — password is never visible to us, Supabase Auth stores it hashed). Profile info you provide during onboarding (name, age, sex, weight, height, activity level, goals, dietary restrictions). Food logs, body measurements, and water intake you choose to record. Meal photos you submit to the AI Scanner.'},
+  {h:'How meal photos are handled',b:'Photos you scan are sent to our AI provider (Anthropic) solely to estimate nutrition, and are not stored by NutriKenya after the estimate is returned. We do not use your photos to train any model.'},
+  {h:'Who we share data with',b:'We use a small number of service providers to run NutriKenya: Supabase (database hosting and authentication), Anthropic (AI food-photo and meal-plan analysis), and Resend (account and password-reset emails). We do not sell your personal data to anyone, ever.'},
+  {h:'How long we keep it',b:'Your data is kept while your account is active. If you delete your account, your profile, logs, and metrics are permanently removed from our database.'},
+  {h:'Your rights',b:'Under the Data Protection Act, 2019, you have the right to access, correct, delete, restrict, or export (in a portable format) your personal data, and to object to how it is processed. To exercise any of these, contact us using the details below — most of this you can already do yourself from the Profile screen (edit your data, or Sign Out & Reset to clear a local session).'},
+  {h:'Security',b:"All traffic to NutriKenya is encrypted (HTTPS). Your data is protected by row-level security rules that mean only you can read or write your own records, enforced at the database level, not just in the app's interface."},
+  {h:'Children',b:'NutriKenya is not directed at children under 18. If you believe a child has created an account, contact us and we will remove it.'},
+  {h:'Changes to this policy',b:"If this policy changes materially, we'll update the date below. Continued use of NutriKenya after a change means you accept the update."},
+  {h:'Contact',b:'Questions or requests about your data: privacy@aiscope.online'},
+];
+var TERMS_SECTIONS=[
+  {h:'Agreement',b:'By creating a NutriKenya account, you agree to these terms. If you don’t agree, please don’t use the app.'},
+  {h:'Not medical advice',b:'NutriKenya provides estimates — calorie and macro targets, AI food-photo analysis, and meal suggestions are calculated from general formulas and Kenyan food-composition data, and can be inaccurate. Nothing in this app is medical, dietary, or clinical advice. If you have a health condition, are pregnant, or have specific dietary needs, talk to a qualified healthcare professional before making decisions based on anything NutriKenya shows you.'},
+  {h:'Your account',b:'You’re responsible for the accuracy of the information you enter and for keeping your password secure. You must be 18 or older to create an account.'},
+  {h:'Acceptable use',b:'Use NutriKenya only for its intended purpose — personal nutrition tracking. Don’t attempt to abuse, overload, or reverse-engineer the AI features, and don’t use the service for anything unlawful.'},
+  {h:'AI feature limits',b:'AI photo scanning, quick-add parsing, and meal-plan generation have real per-use cost to us. We may rate-limit, throttle, or place these behind a paid tier at any time; core manual food logging will always remain free.'},
+  {h:'Subscriptions',b:'NutriKenya is currently free. If we introduce paid plans, pricing and billing terms (including via M-Pesa) will be shown clearly before you’re charged, and this section will be updated.'},
+  {h:'No warranty',b:'NutriKenya is provided "as is." We work to keep nutrition data accurate, but we don’t guarantee it’s error-free, and we’re not liable for decisions made based on the app’s estimates.'},
+  {h:'Ending your account',b:'You can stop using NutriKenya at any time via Sign Out & Reset. To permanently delete your account and data, contact us at the address below.'},
+  {h:'Governing law',b:'These terms are governed by the laws of Kenya.'},
+  {h:'Contact',b:'Questions about these terms: legal@aiscope.online'},
+];
+function LegalDoc(props){
+  var isPrivacy=props.doc==='privacy';
+  var sections=isPrivacy?PRIVACY_SECTIONS:TERMS_SECTIONS;
+  return(
+    <div className="screen-fixed" style={{display:'flex',flexDirection:'column',fontFamily:FF}}>
+      <div style={{padding:'calc(52px + env(safe-area-inset-top)) 24px 24px',display:'flex',flexDirection:'column',flex:1,overflow:'hidden'}}>
+        <button className="bg" onClick={props.onBack} style={{width:'auto',alignSelf:'flex-start',padding:'8px 16px',marginBottom:24,flexShrink:0}}>← BACK</button>
+        <div style={{maxWidth:520,width:'100%',margin:'0 auto',flex:1,overflowY:'auto',paddingBottom:24}}>
+          <div style={{fontSize:26,fontWeight:800,color:W,letterSpacing:'-0.03em',marginBottom:6}}>{isPrivacy?'Privacy Policy':'Terms of Service'}</div>
+          <div style={{color:W3,fontSize:12,marginBottom:28}}>Last updated 27 July 2026</div>
+          {sections.map(function(s,i){return(<div key={i} style={{marginBottom:22}}><div style={{color:W,fontSize:13,fontWeight:700,letterSpacing:'0.02em',marginBottom:6,textTransform:'uppercase'}}>{s.h}</div><div style={{color:W2,fontSize:14,lineHeight:1.7}}>{s.b}</div></div>);})}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── ONBOARD ───────────────────────────────────────────────
@@ -381,12 +429,13 @@ function Dash(props){
   function fmtT(s){return String(Math.floor(s/3600)).padStart(2,'0')+':'+String(Math.floor((s%3600)/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');}
   async function handleWater(v){
     var nw=Math.min(water+v,6000);setWater(nw);showToast('+'+v+'ml water logged');
-    if(userId){
-      try{
-        var res=await supabase.from('profiles').update({water_logged:nw,water_date:today()}).eq('id',userId);
-        if(res.error)throw res.error;
-      }catch(e){console.error(e);showToast("Couldn't sync water — logged locally only");}
-    }
+    if(!userId)return;
+    var payload={userId:userId,water_logged:nw,water_date:today()};
+    if(!navigator.onLine){queueWrite('water-update',payload);return;}
+    try{
+      var res=await supabase.from('profiles').update({water_logged:nw,water_date:today()}).eq('id',userId);
+      if(res.error)throw res.error;
+    }catch(e){console.error(e);logError('water-update',e,userId);queueWrite('water-update',payload);}
   }
   var highProtein=foods.filter(function(f){return f.p>=15;}).slice(0,3);
   return(
@@ -407,6 +456,105 @@ function Dash(props){
 }
 
 // ── LOG ───────────────────────────────────────────────────
+// ── BARCODE SCAN ──────────────────────────────────────────
+// Looks up a scanned barcode against Open Food Facts (free, no API key) and
+// normalizes its per-100g nutriments into the same food-item shape used
+// everywhere else in the app.
+async function lookupBarcode(code){
+  var data=await fetchJSON('https://world.openfoodfacts.org/api/v2/product/'+encodeURIComponent(code)+'.json?fields=product_name,generic_name,nutriments',{},15000);
+  if(!data||data.status!==1||!data.product)return null;
+  var p=data.product,n=p.nutriments||{};
+  var name=p.product_name||p.generic_name;
+  if(!name)return null;
+  var kcal100=n['energy-kcal_100g'];
+  if(kcal100===undefined&&n.energy_100g!==undefined)kcal100=n.energy_100g/4.184;
+  return{n:name,s:name,e:Math.round(kcal100||0),p:Math.round((n.proteins_100g||0)*10)/10,c:Math.round((n.carbohydrates_100g||0)*10)/10,f:Math.round((n.fat_100g||0)*10)/10,pr:'100g',cat:'Barcode'};
+}
+function BarcodeScan(props){
+  var onFound=props.onFound,showToast=props.showToast,lang=props.lang;
+  var sw=lang==='sw';
+  var supported=typeof window!=='undefined'&&'BarcodeDetector' in window;
+  var [scanning,setScanning]=useState(false);
+  var [loading,setLoading]=useState(false);
+  var [manualCode,setManualCode]=useState('');
+  var [camError,setCamError]=useState(null);
+  var videoRef=useRef();
+
+  async function handleCode(code){
+    setScanning(false);setLoading(true);setCamError(null);
+    try{
+      var product=await lookupBarcode(code);
+      if(!product){showToast('No product found for that barcode.');}else{onFound(product);}
+    }catch(e){console.error(e);logError('barcode-lookup',e);showToast(e.message&&e.message.indexOf('timed out')>-1?e.message:'Lookup failed. Check your connection.');}
+    setLoading(false);
+  }
+
+  useEffect(function(){
+    if(!supported||!scanning)return;
+    var stopped=false,stream=null,raf=null;
+    (async function(){
+      try{
+        stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+        if(stopped){stream.getTracks().forEach(function(t){t.stop();});return;}
+        if(videoRef.current){videoRef.current.srcObject=stream;await videoRef.current.play();}
+        var detector=new window.BarcodeDetector({formats:['ean_13','ean_8','upc_a','upc_e','code_128']});
+        function loop(){
+          if(stopped)return;
+          if(videoRef.current&&videoRef.current.readyState>=2){
+            detector.detect(videoRef.current).then(function(codes){
+              if(stopped)return;
+              if(codes&&codes.length>0){stopped=true;handleCode(codes[0].rawValue);}
+              else{raf=requestAnimationFrame(loop);}
+            }).catch(function(){if(!stopped)raf=requestAnimationFrame(loop);});
+          }else{raf=requestAnimationFrame(loop);}
+        }
+        loop();
+      }catch(camErr){
+        console.error(camErr);
+        if(!stopped){setCamError('Camera access denied or unavailable.');setScanning(false);}
+      }
+    })();
+    return function(){
+      stopped=true;
+      if(raf)cancelAnimationFrame(raf);
+      if(stream)stream.getTracks().forEach(function(t){t.stop();});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[scanning,supported]);
+
+  if(!supported){
+    return(
+      <div>
+        <div style={{color:W2,fontSize:12,marginBottom:14,lineHeight:1.6}}>{sw?'Kusoma bakoodi kwa kamera hakuungwi mkono na kivinjari hiki. Andika nambari ya bakoodi badala yake.':"Live barcode scanning isn't supported on this browser. Enter the barcode number instead."}</div>
+        <div style={{display:'flex',gap:8}}>
+          <input value={manualCode} onChange={function(e){setManualCode(e.target.value.replace(/\D/g,''));}} onKeyDown={function(e){if(e.key==='Enter'&&manualCode)handleCode(manualCode);}} placeholder="e.g. 6009xxxxxxxxx" inputMode="numeric" style={{flex:1,padding:'11px 13px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF}}/>
+          <button className="bg" disabled={!manualCode||loading} onClick={function(){handleCode(manualCode);}} style={{width:'auto',padding:'0 18px'}}>{loading?'...':'Look Up'}</button>
+        </div>
+      </div>
+    );
+  }
+  return(
+    <div>
+      {!scanning&&!loading&&(
+        <div onClick={function(){setCamError(null);setScanning(true);}} style={{border:'1px dashed '+BD2,borderRadius:16,padding:44,textAlign:'center',cursor:'pointer',marginBottom:12}}>
+          <div style={{display:'flex',justifyContent:'center',marginBottom:14}}><IcScan s={32} c={W3}/></div>
+          <div style={{color:W,fontSize:15,fontWeight:600,marginBottom:5}}>{sw?'Gusa kuanza kusoma bakoodi':'Tap to scan a barcode'}</div>
+          <div style={{color:W3,fontSize:12}}>{sw?'Elekeza kamera kwenye bakoodi':'Point your camera at a product barcode'}</div>
+        </div>
+      )}
+      {scanning&&(
+        <div style={{position:'relative',borderRadius:16,overflow:'hidden',marginBottom:12,background:'#000'}}>
+          <video ref={videoRef} muted playsInline style={{width:'100%',display:'block',maxHeight:280,objectFit:'cover'}}/>
+          <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}><div style={{width:'72%',height:70,border:'2px solid rgba(255,255,255,0.7)',borderRadius:8}}/></div>
+          <button className="bg" onClick={function(){setScanning(false);}} style={{position:'absolute',bottom:12,left:12,right:12,width:'auto'}}>Cancel</button>
+        </div>
+      )}
+      {loading&&(<Card><div style={{color:W2,fontSize:11,letterSpacing:'0.12em',textTransform:'uppercase',marginBottom:12,textAlign:'center'}}>Looking up product</div><div style={{height:1,background:C3,overflow:'hidden',position:'relative',borderRadius:1}}><div style={{position:'absolute',top:0,left:0,height:'100%',background:W,animation:'scanLine 1.4s ease-in-out infinite',width:'45%',borderRadius:1}}/></div></Card>)}
+      {camError&&<div style={{background:C1,border:'1px solid '+BD2,borderRadius:12,padding:14,color:W2,marginBottom:12,fontSize:13,lineHeight:1.5}}>{camError}</div>}
+    </div>
+  );
+}
+
 function Log(props){
   var log=props.log,setLog=props.setLog,lang=props.lang,showToast=props.showToast,userId=props.userId,foods=props.foods||[],restaurants=props.restaurants||[],recentFoods=props.recentFoods||[],addToLog=props.addToLog;
   var [meal,setMeal]=useState('breakfast');
@@ -453,12 +601,19 @@ function Log(props){
   async function rm(key,k){
     var item=log[key].find(function(x){return x._k===k;});
     setLog(function(l){var n=Object.assign({},l);n[key]=l[key].filter(function(x){return x._k!==k;});return n;});
-    if(item&&item.db_id&&userId){
-      try{
-        var res=await supabase.from('food_logs').delete().eq('id',item.db_id);
-        if(res.error)throw res.error;
-      }catch(e){console.error(e);showToast("Couldn't delete — try again");}
+    if(!item||!userId)return;
+    if(!item.db_id){
+      // Never made it to the server (still queued offline) — cancel the
+      // pending insert instead of issuing a delete for a row that may not
+      // exist yet.
+      cancelQueued(function(q){return q.label==='food-log-insert'&&q.payload._k===k;});
+      return;
     }
+    if(!navigator.onLine){queueWrite('food-log-delete',{id:item.db_id});return;}
+    try{
+      var res=await supabase.from('food_logs').delete().eq('id',item.db_id);
+      if(res.error)throw res.error;
+    }catch(e){console.error(e);logError('food-log-delete',e,userId);queueWrite('food-log-delete',{id:item.db_id});showToast("Offline — delete will sync automatically");}
   }
   async function quickAdd(){
     if(!quickText.trim())return;
@@ -518,7 +673,7 @@ function Log(props){
       {adding?(
         <Card>
           <div style={{display:'flex',gap:6,marginBottom:16,overflowX:'auto',paddingBottom:2}}>
-            {[{v:'foods',l:sw?'Vyakula':'Foods'},{v:'restaurant',l:sw?'Migahawa':'Restaurants'},{v:'quick',l:sw?'Andika':'Quick Add'}].map(function(t){var active=src===t.v;return(<button key={t.v} className="pill" onClick={function(){setSrc(t.v);}} style={{border:'1px solid '+(active?W:BD),background:active?W:'transparent',color:active?BG:W2,padding:'7px 12px',flexShrink:0}}>{t.l}</button>);})}
+            {[{v:'foods',l:sw?'Vyakula':'Foods'},{v:'restaurant',l:sw?'Migahawa':'Restaurants'},{v:'quick',l:sw?'Andika':'Quick Add'},{v:'barcode',l:sw?'Bakoodi':'Barcode'}].map(function(t){var active=src===t.v;return(<button key={t.v} className="pill" onClick={function(){setSrc(t.v);}} style={{border:'1px solid '+(active?W:BD),background:active?W:'transparent',color:active?BG:W2,padding:'7px 12px',flexShrink:0}}>{t.l}</button>);})}
           </div>
           {src==='foods'&&(
             <div>
@@ -584,6 +739,7 @@ function Log(props){
               {quickItems&&quickItems.map(function(item,i,arr){return(<div key={i}><button className="fr" onClick={function(){openQty({n:item.food,s:item.food,e:item.calories,p:item.protein,c:item.carbs,f:item.fat,pr:item.portion,cat:'Quick Add'});setQuickItems(null);setQuickText('');}}><div><div style={{color:W,fontSize:14,fontWeight:500}}>{item.food}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{item.portion}</div></div><div style={{textAlign:'right',flexShrink:0,marginLeft:10}}><div style={{color:W,fontSize:13,fontWeight:600}}>{item.calories} kcal</div><div style={{color:W2,fontSize:11}}>{item.protein}g P</div></div></button>{i<arr.length-1&&<Sep/>}</div>);})}
             </div>
           )}
+          {src==='barcode'&&<BarcodeScan lang={lang} showToast={showToast} onFound={openQty}/>}
           <div style={{marginTop:16}}><button className="bg" onClick={function(){setAdding(false);setSrc('foods');setSearch('');setRestSearch('');setOpenRest(null);setRestGrp('All');setQuickText('');setQuickItems(null);setQuickError(null);}}>Cancel</button></div>
         </Card>
       ):(
@@ -670,13 +826,25 @@ function Metrics(props){
     // onboarding-day weight would silently skew both over time.
     setProfile(function(p){return Object.assign({},p,{weight:newWeight});});
     if(userId){
-      try{
-        var res=await supabase.from('body_metrics').insert({user_id:userId,date:today(),weight:newWeight||null,waist:parseFloat(meas.waist)||null,chest:parseFloat(meas.chest)||null,hips:parseFloat(meas.hips)||null,neck:parseFloat(meas.neck)||null});
-        if(res.error)throw res.error;
-        var pRes=await supabase.from('profiles').update({weight:newWeight}).eq('id',userId);
-        if(pRes.error)throw pRes.error;
-        showToast('Metrics saved');
-      }catch(e){console.error(e);showToast("Couldn't save — logged locally only");}
+      var metricPayload={user_id:userId,date:today(),weight:newWeight||null,waist:parseFloat(meas.waist)||null,chest:parseFloat(meas.chest)||null,hips:parseFloat(meas.hips)||null,neck:parseFloat(meas.neck)||null};
+      if(!navigator.onLine){
+        queueWrite('body-metrics-insert',metricPayload);
+        queueWrite('profile-weight-update',{userId:userId,weight:newWeight});
+        showToast('Saved offline — will sync automatically');
+      }else{
+        try{
+          var res=await supabase.from('body_metrics').insert(metricPayload);
+          if(res.error)throw res.error;
+          var pRes=await supabase.from('profiles').update({weight:newWeight}).eq('id',userId);
+          if(pRes.error)throw pRes.error;
+          showToast('Metrics saved');
+        }catch(e){
+          console.error(e);logError('body-metrics-save',e,userId);
+          queueWrite('body-metrics-insert',metricPayload);
+          queueWrite('profile-weight-update',{userId:userId,weight:newWeight});
+          showToast("Couldn't save — will retry automatically");
+        }
+      }
     }else{showToast('Metrics saved');}
     setNw('');setMeas({waist:'',chest:'',hips:'',neck:''});setForm(false);
   }
@@ -716,7 +884,7 @@ function Metrics(props){
         var res=await supabase.from('profiles').update({calories:newTargets.calories,protein:newTargets.protein,carbs:newTargets.carbs,fat:newTargets.fat}).eq('id',userId);
         if(res.error)throw res.error;
         showToast('Targets updated');
-      }catch(e){console.error(e);showToast("Couldn't sync target — try again later");}
+      }catch(e){console.error(e);logError('target-update',e,userId);showToast("Couldn't sync target — try again later");}
     }else{showToast('Targets updated');}
     setRecal(null);
   }
@@ -753,7 +921,7 @@ function Metrics(props){
 
 // ── PROFILE ───────────────────────────────────────────────
 function Profile(props){
-  var profile=props.profile,targets=props.targets,lang=props.lang,setLang=props.setLang,score=props.score,streak=props.streak,onReset=props.onReset,setScore=props.setScore,showToast=props.showToast,userEmail=props.userEmail,userId=props.userId;
+  var profile=props.profile,targets=props.targets,lang=props.lang,setLang=props.setLang,score=props.score,streak=props.streak,onReset=props.onReset,setScore=props.setScore,showToast=props.showToast,userEmail=props.userEmail,userId=props.userId,onLegal=props.onLegal;
   var [plan,setPlan]=useState(null);
   var [planLoad,setPlanLoad]=useState(false);
   var [showPlan,setShowPlan]=useState(false);
@@ -762,8 +930,33 @@ function Profile(props){
   var [newEmail,setNewEmail]=useState('');
   var [emailSent,setEmailSent]=useState(false);
   var [passSent,setPassSent]=useState(false);
+  var [pendingSync,setPendingSync]=useState(function(){return queueLength();});
+  var [exporting,setExporting]=useState(false);
+  var [remindersOn,setRemindersOn]=useState(false);
+  var [remindersBusy,setRemindersBusy]=useState(false);
   var sw=lang==='sw';
   var inp={width:'100%',padding:'0 0 12px',background:'none',border:'none',borderBottom:'1px solid '+BD2,color:W,outline:'none',boxSizing:'border-box',fontFamily:FF,fontSize:18};
+  useEffect(function(){
+    return onQueueChange(setPendingSync);
+  },[]);
+  useEffect(function(){
+    if(!pushSupported())return;
+    getPushSubscription().then(function(sub){setRemindersOn(!!sub);}).catch(function(){});
+  },[]);
+  async function toggleReminders(){
+    if(!userId){showToast('Sign in to enable reminders');return;}
+    setRemindersBusy(true);
+    try{
+      if(remindersOn){
+        await unsubscribeFromPush();
+        setRemindersOn(false);showToast('Reminders turned off');
+      }else{
+        await subscribeToPush(userId);
+        setRemindersOn(true);showToast('Reminders turned on');
+      }
+    }catch(e){console.error(e);logError('push-toggle',e,userId);showToast(e.message||"Couldn't update reminders");}
+    setRemindersBusy(false);
+  }
   async function genPlan(){
     setPlanLoad(true);setShowPlan(true);setPlan(null);
     try{
@@ -787,11 +980,42 @@ function Profile(props){
     if(res.error){showToast(res.error.message);return;}
     setEmailSent(true);showToast('Confirmation sent to '+cleanEmail);
   }
+  async function exportData(){
+    if(!userId){showToast('Sign in to export your data');return;}
+    setExporting(true);
+    try{
+      var results=await Promise.all([
+        supabase.from('food_logs').select('date,meal,food_name,food_name_sw,calories,protein,carbs,fat,portion').eq('user_id',userId).order('date'),
+        supabase.from('body_metrics').select('date,weight,waist,chest,hips,neck').eq('user_id',userId).order('date'),
+      ]);
+      if(results[0].error)throw results[0].error;
+      if(results[1].error)throw results[1].error;
+      var logs=results[0].data||[],metrics=results[1].data||[];
+      var cols=['type','date','meal','food_name','food_name_sw','calories','protein','carbs','fat','portion','weight','waist','chest','hips','neck'];
+      function esc(v){
+        if(v===null||v===undefined)return '';
+        var s=String(v);
+        return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;
+      }
+      var rows=[cols.join(',')];
+      logs.forEach(function(r){rows.push(cols.map(function(c){return c==='type'?'food_log':esc(r[c]);}).join(','));});
+      metrics.forEach(function(r){rows.push(cols.map(function(c){return c==='type'?'body_metric':esc(r[c]);}).join(','));});
+      var blob=new Blob([rows.join('\n')],{type:'text/csv;charset=utf-8;'});
+      var url=URL.createObjectURL(blob);
+      var a=document.createElement('a');
+      a.href=url;a.download='nutrikenya-export-'+today()+'.csv';
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Export downloaded');
+    }catch(e){console.error(e);logError('csv-export',e,userId);showToast("Couldn't export — try again");}
+    setExporting(false);
+  }
   var goalLabel={lose:'Fat Loss',gain:'Muscle Gain',recomp:'Body Recomp',maintain:'Maintenance'}[profile.goal];
   var actLabels=['Sedentary','Light','Moderate','Very Active','Extreme'];
   return(
     <div className="page" style={{padding:'24px 20px 100px',fontFamily:FF}}>
       <div style={{fontSize:24,fontWeight:800,color:W,letterSpacing:'-0.03em',marginBottom:20}}>{sw?'Wasifu':'Profile'}</div>
+      {pendingSync>0&&(<div style={{background:C2,border:'1px solid '+BD,borderRadius:10,padding:'10px 14px',color:W2,fontSize:12,marginBottom:12,lineHeight:1.5}}>{pendingSync} {pendingSync===1?'change':'changes'} waiting to sync — will finish automatically when you're back online.</div>)}
       <Card>
         <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:18}}>
           <div style={{width:48,height:48,borderRadius:24,background:W,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,fontWeight:900,color:BG,flexShrink:0}}>{(profile.name||'U')[0].toUpperCase()}</div>
@@ -801,6 +1025,7 @@ function Profile(props){
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:14}}>{[{l:'Goal',v:goalLabel},{l:'Activity',v:actLabels[profile.activity]||'Moderate'},{l:'Training',v:(profile.workoutType||'Mixed').split(' ').slice(0,2).join(' ')},{l:'Diet',v:profile.restrictions||'No restrictions'}].map(function(x,i){return(<div key={i} style={{background:C2,border:'1px solid '+BD,borderRadius:10,padding:'11px'}}><Lbl ch={x.l} style={{marginBottom:4}}/><div style={{color:W,fontSize:12,fontWeight:500,lineHeight:1.3}}>{x.v}</div></div>);})}</div>
       </Card>
       <Card><Lbl ch="Daily Targets" style={{marginBottom:14}}/>{[{l:'Calories',v:targets.calories+' kcal'},{l:'Protein',v:targets.protein+'g'},{l:'Carbs',v:targets.carbs+'g'},{l:'Fat',v:targets.fat+'g'},{l:'Water',v:targets.water+'ml'}].map(function(t,i,arr){return(<div key={i}><div style={{display:'flex',justifyContent:'space-between',padding:'10px 0'}}><span style={{color:W2,fontSize:13}}>{t.l}</span><span style={{color:W,fontSize:13,fontWeight:600}}>{t.v}</span></div>{i<arr.length-1&&<Sep/>}</div>);})}</Card>
+      <button className="ic" onClick={exportData} disabled={exporting} style={{marginBottom:10,opacity:exporting?0.6:1}}><span style={{letterSpacing:'-0.01em'}}>{exporting?'Exporting...':'Export My Data (CSV)'}</span><IcArr c={W2}/></button>
       <button className="ic" onClick={function(){setShowAccount(function(v){return!v;});}} style={{marginBottom:10}}><span style={{letterSpacing:'-0.01em'}}>Account Settings</span><IcArr c={W2}/></button>
       {showAccount&&(<Card>
         <Lbl ch="Password" style={{marginBottom:10}}/>
@@ -815,11 +1040,16 @@ function Profile(props){
         <div><Lbl ch="Language / Lugha" style={{marginBottom:4}}/><div style={{color:W,fontSize:14,fontWeight:500}}>English · Kiswahili</div></div>
         <div style={{display:'flex',gap:6}}>{['en','sw'].map(function(l){var active=lang===l;return(<button key={l} className="pill" onClick={function(){setLang(l);}} style={{border:'1px solid '+(active?W:BD),background:active?W:'transparent',color:active?BG:W2,padding:'7px 12px'}}>{l==='en'?'EN':'SW'}</button>);})}</div>
       </Card>
+      {pushSupported()&&(<Card style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <div><Lbl ch={sw?'Vikumbusho':'Reminders'} style={{marginBottom:4}}/><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?'Kikumbusho cha kila siku cha kurekodi':'Daily nudge to log your meals'}</div></div>
+        <button className="pill" disabled={remindersBusy} onClick={toggleReminders} style={{border:'1px solid '+(remindersOn?W:BD),background:remindersOn?W:'transparent',color:remindersOn?BG:W2,padding:'7px 14px',opacity:remindersBusy?0.6:1}}>{remindersOn?'ON':'OFF'}</button>
+      </Card>)}
       <button className="ic" onClick={genPlan} style={{marginBottom:10}}><span style={{letterSpacing:'-0.01em'}}>{sw?'Mpango wa Chakula wa AI':'Generate AI Meal Plan'}</span><IcArr c={W2}/></button>
       {showPlan&&(<Card><Lbl ch="Your 3-Day Kenyan Plan" style={{marginBottom:14}}/>{planLoad&&(<div style={{padding:'20px 0'}}><div style={{height:1,background:C3,overflow:'hidden',position:'relative',marginBottom:8,borderRadius:1}}><div style={{position:'absolute',top:0,left:0,height:'100%',background:W,animation:'scanLine 1.4s ease-in-out infinite',width:'45%',borderRadius:1}}/></div><div style={{color:W3,fontSize:11,letterSpacing:'0.08em',textTransform:'uppercase',textAlign:'center'}}>Generating...</div></div>)}{plan&&plan.error&&<div style={{color:W2,fontSize:13}}>{plan.message||'Could not generate. Try again.'}</div>}{plan&&plan.days&&plan.days.map(function(d,i,arr){return(<div key={i} style={{marginBottom:14,paddingBottom:14,borderBottom:i<arr.length-1?'1px solid '+BD:'none'}}><div style={{color:W,fontSize:11,fontWeight:700,letterSpacing:'0.06em',textTransform:'uppercase',marginBottom:8}}>{d.day}</div>{['breakfast','lunch','dinner'].map(function(m){return d[m]?(<div key={m} style={{marginBottom:7}}><span style={{color:W3,fontSize:10,letterSpacing:'0.06em',textTransform:'uppercase',marginRight:7}}>{m}</span><span style={{color:W2,fontSize:13,lineHeight:1.4}}>{d[m]}</span></div>):null;})}{d.calories&&<div style={{color:W3,fontSize:11,marginTop:7}}>~{d.calories} kcal · {d.protein}g protein</div>}{d.tip&&<div style={{color:W2,fontSize:12,marginTop:5,fontStyle:'italic',lineHeight:1.5}}>{d.tip}</div>}</div>);})}
       <button className="bg" onClick={function(){setShowPlan(false);setPlan(null);}}>Close</button></Card>)}
       <button className="ic" onClick={function(){setCheckin(function(v){return!v;});}} style={{marginBottom:10}}><span style={{letterSpacing:'-0.01em'}}>{sw?'Ukaguzi wa Kila Wiki':'Weekly Check-In'}</span><IcArr c={W2}/></button>
       {checkin&&(<Card><Lbl ch="How is your week going?" style={{marginBottom:12}}/>{['Crushing it — great progress','Steady — staying consistent','Struggled a bit this week','Need to adjust my goals'].map(function(opt,i,arr){return(<div key={i}><button className="fr" onClick={function(){setCheckin(false);setScore(function(s){var ns=Math.min(s+5,100);if(userId){supabase.from('profiles').update({score:ns}).eq('id',userId);}return ns;});showToast('Check-in complete +5 pts');}}><span style={{color:W,fontSize:14,fontWeight:500}}>{opt}</span><IcArr s={12} c={W3}/></button>{i<arr.length-1&&<Sep/>}</div>);})}</Card>)}
+      <div style={{display:'flex',justifyContent:'center',gap:14,margin:'18px 0 4px'}}><span onClick={function(){onLegal('privacy');}} style={{color:W3,fontSize:11,cursor:'pointer',letterSpacing:'0.04em'}}>Privacy Policy</span><span style={{color:W3,fontSize:11}}>·</span><span onClick={function(){onLegal('terms');}} style={{color:W3,fontSize:11,cursor:'pointer',letterSpacing:'0.04em'}}>Terms of Service</span></div>
       <button onClick={onReset} style={{width:'100%',padding:'13px',background:'transparent',border:'1px solid rgba(255,255,255,0.08)',borderRadius:10,color:W3,fontSize:12,cursor:'pointer',marginTop:4,fontFamily:FF,letterSpacing:'0.06em',textTransform:'uppercase'}}>{sw?'Anza Upya':'Sign Out & Reset'}</button>
     </div>
   );
@@ -838,6 +1068,7 @@ function Toast(props){if(!props.msg)return null;return <div className="toast">{p
 // ── MAIN ──────────────────────────────────────────────────
 export default function NutriKenya(){
   var [screen,setScreen]=useState('auth'); // welcome screen shown immediately
+  var [legalReturn,setLegalReturn]=useState('auth');
   var [tab,setTab]=useState('dashboard');
   var [lang,setLang]=useState('en');
   var [user,setUser]=useState(null);
@@ -922,12 +1153,35 @@ export default function NutriKenya(){
       setRestaurants(Object.values(map));
     }).catch(function(e){console.error('Failed to load foods/restaurants:',e);});
 
+    // Wire the offline queue: handlers are the actual network calls replayed
+    // on flush (when connectivity returns), registered once since setLog is
+    // a stable setState identity and safe to close over from a mount effect.
+    registerHandler('food-log-insert',insertFoodLogRow);
+    registerHandler('food-log-delete',function(payload){return supabase.from('food_logs').delete().eq('id',payload.id);});
+    registerHandler('water-update',function(payload){return supabase.from('profiles').update({water_logged:payload.water_logged,water_date:payload.water_date}).eq('id',payload.userId);});
+    registerHandler('body-metrics-insert',function(payload){return supabase.from('body_metrics').insert(payload);});
+    registerHandler('profile-weight-update',function(payload){return supabase.from('profiles').update({weight:payload.weight}).eq('id',payload.userId);});
+    installOnlineFlush();
+
     return function(){sub.data.subscription.unsubscribe();};
     // handleAuthDone only closes over stable state setters/refs and pure
     // helpers, so a fresh render's copy behaves identically — intentionally
     // omitted so this mount-only effect doesn't resubscribe every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[]);
+
+  function insertFoodLogRow(payload){
+    return supabase.from('food_logs').insert(payload.row).select('id').single().then(function(res){
+      if(!res.error&&res.data&&res.data.id){
+        setLog(function(l){
+          var n=Object.assign({},l);
+          Object.keys(n).forEach(function(m){n[m]=n[m].map(function(item){return item._k===payload._k?Object.assign({},item,{db_id:res.data.id}):item;});});
+          return n;
+        });
+      }
+      return res;
+    });
+  }
 
   async function addToLog(meal,food){
     var k=Date.now();
@@ -936,15 +1190,15 @@ export default function NutriKenya(){
     pushRecent(food);
     setScore(function(s){var ns=Math.min(s+2,100);if(user&&user.id){supabase.from('profiles').update({score:ns}).eq('id',user.id);}return ns;});
     if(isFirstToday){setStreak(function(s){return s+1;});}
-    if(user&&user.id){
-      try{
-        var res=await supabase.from('food_logs').insert({user_id:user.id,date:today(),meal:meal,food_name:food.n,food_name_sw:food.s||food.n,calories:food.e||0,protein:food.p||0,carbs:food.c||0,fat:food.f||0,portion:food.pr||''}).select('id').single();
-        if(res.error)throw res.error;
-        if(res.data&&res.data.id){setLog(function(l){var n=Object.assign({},l);n[meal]=l[meal].map(function(item){return item._k===k?Object.assign({},item,{db_id:res.data.id}):item;});return n;});}
-      }catch(e){
-        console.error(e);
-        showToast("Couldn't save — logged locally only");
-      }
+    if(!user||!user.id)return;
+    var payload={_k:k,row:{user_id:user.id,date:today(),meal:meal,food_name:food.n,food_name_sw:food.s||food.n,calories:food.e||0,protein:food.p||0,carbs:food.c||0,fat:food.f||0,portion:food.pr||''}};
+    if(!navigator.onLine){queueWrite('food-log-insert',payload);showToast(food.n+" added — will sync when back online");return;}
+    try{
+      var res=await insertFoodLogRow(payload);
+      if(res.error)throw res.error;
+    }catch(e){
+      console.error(e);logError('food-log-insert',e,user.id);
+      queueWrite('food-log-insert',payload);
     }
   }
 
@@ -998,7 +1252,7 @@ export default function NutriKenya(){
       try{
         var res=await supabase.from('profiles').upsert({id:user.id,name:pr.name,age:pr.age,sex:pr.sex,weight:pr.weight,height:pr.height,goal:pr.goal,speed:pr.speed,activity:pr.activity,workout_type:pr.workoutType,restrictions:pr.restrictions,target_weight:pr.targetWeight||null,calories:t.calories,protein:t.protein,carbs:t.carbs,fat:t.fat,water:t.water,score:score});
         if(res.error)throw res.error;
-      }catch(e){console.error(e);showToast("Couldn't save your profile — check your connection");}
+      }catch(e){console.error(e);logError('onboard-save',e,user.id);showToast("Couldn't save your profile — check your connection");}
     }
     setScreen('app');
   }
@@ -1010,9 +1264,10 @@ export default function NutriKenya(){
     authHandled.current=false;
   }
 
-  if(screen==='auth') return(<><GS/><Auth onDone={handleAuthDone} lang={lang} showToast={showToast}/><Toast msg={toast}/></>);
+  if(screen==='auth') return(<><GS/><Auth onDone={handleAuthDone} lang={lang} showToast={showToast} onLegal={function(doc){setLegalReturn('auth');setScreen(doc);}}/><Toast msg={toast}/></>);
   if(screen==='onboard') return(<><GS/><Onboard onDone={handleOnboard} uname={(user&&user.name)||''} lang={lang}/></>);
   if(screen==='resetPassword') return(<><GS/><ResetPassword onDone={function(){setScreen('auth');}} showToast={showToast}/><Toast msg={toast}/></>);
+  if(screen==='privacy'||screen==='terms') return(<><GS/><LegalDoc doc={screen} onBack={function(){setScreen(legalReturn);}}/></>);
 
   return(
     <div style={{background:BG,position:'fixed',inset:0,fontFamily:FF,color:W}}>
@@ -1022,7 +1277,7 @@ export default function NutriKenya(){
         {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants} recentFoods={recentFoods} addToLog={addToLog}/>}
         {tab==='scan'&&<Scan addToLog={addToLog} lang={lang} showToast={showToast}/>}
         {tab==='metrics'&&<Metrics profile={profile} setProfile={setProfile} targets={targets} setTargets={setTargets} metrics={metrics} setMetrics={setMetrics} score={score} lang={lang} showToast={showToast} userId={user&&user.id}/>}
-        {tab==='profile'&&<Profile profile={profile} targets={targets} lang={lang} setLang={setLang} score={score} streak={streak} setScore={setScore} onReset={reset} showToast={showToast} userEmail={user&&user.email} userId={user&&user.id}/>}
+        {tab==='profile'&&<Profile profile={profile} targets={targets} lang={lang} setLang={setLang} score={score} streak={streak} setScore={setScore} onReset={reset} showToast={showToast} userEmail={user&&user.email} userId={user&&user.id} onLegal={function(doc){setLegalReturn('app');setScreen(doc);}}/>}
       </div>
       <Nav tab={tab} setTab={setTab} lang={lang}/>
       <Toast msg={toast}/>
