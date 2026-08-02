@@ -2,6 +2,7 @@ import { supabase } from './supabase'
 import { logError } from './errorLog'
 import { queueWrite, cancelQueued, registerHandler, installOnlineFlush, queueLength, onQueueChange } from './offlineQueue'
 import { pushSupported, getPushSubscription, subscribeToPush, unsubscribeFromPush } from './push'
+import { track, identifyUser, resetAnalytics } from './analytics'
 import { useState, useRef, useEffect } from "react";
 
 const BG='#070707',C1='#0D0D0D',C2='#141414',C3='#1C1C1C',C4='#252525';
@@ -214,10 +215,12 @@ function Auth(props){
       if(mode==='login'){
         r=await supabase.auth.signInWithPassword({email:cleanEmail,password:password});
         if(r.error)throw r.error;
+        track('login_completed');
         props.onDone({name:cleanEmail.split('@')[0],email:cleanEmail,id:r.data.user.id});
       } else {
         r=await supabase.auth.signUp({email:cleanEmail,password:password,options:{emailRedirectTo:'https://nutrikenya.vercel.app'}});
         if(r.error)throw r.error;
+        track('signup_completed');
         setConfirmed(true);
       }
     }catch(e){showToast(e.message||'Something went wrong.');}
@@ -358,18 +361,21 @@ function Onboard(props){
   var [htFt,setHtFt]=useState('');
   var [htIn,setHtIn]=useState('');
   var q=QS[step],sw=props.lang==='sw';
+  useEffect(function(){track('onboarding_started');},[]);
   function htCm(){return htUnit==='cm'?(parseFloat(val)||170):Math.round(parseFloat(htFt||0)*30.48+parseFloat(htIn||0)*2.54)||170;}
   var htOk=q.type==='height'?(htUnit==='cm'?!!val:(!!htFt||!!htIn)):true;
   function next(v){
     var a=Object.assign({},ans);
     a[q.id]=q.id==='height'?htCm():(v!==undefined?v:val);
     setAns(a);setVal('');
+    track('onboarding_step_completed',{step:step,question_id:q.id});
     if(step===QS.length-1){
       var gl=a.goal;
       var goal=(gl&&(gl.includes('Lose')||gl.includes('Kupunguza')))?'lose':(gl&&(gl.includes('Build')||gl.includes('Kujenga')))?'gain':(gl&&(gl.includes('Recomp')||gl.includes('Kubadilisha')))?'recomp':'maintain';
       var sp=a.speed;
       var speed=(sp&&(sp.includes('Slow')||sp.includes('Polepole')))?'slow':(sp&&(sp.includes('Aggressive')||sp.includes('Haraka')))?'aggressive':'moderate';
       var actIdx=['Sedentary','Lightly','Moderately','Very Active','Extremely'].findIndex(function(x){return a.activity&&a.activity.includes(x);});
+      track('onboarding_completed',{goal:goal,speed:speed});
       props.onDone({name:a.name||props.uname,age:parseInt(a.age)||25,sex:(a.sex==='Male'||a.sex==='Mume')?'male':'female',weight:parseFloat(a.weight)||70,height:parseFloat(a.height)||170,goal:goal,speed:speed,activity:Math.max(0,actIdx<0?2:actIdx),workoutDays:parseInt(a.workoutDays)||3,workoutType:a.workoutType,restrictions:a.restrictions||'None',targetWeight:parseFloat(a.targetWeight)||0});
     } else {setStep(function(s){return s+1;});}
   }
@@ -625,7 +631,11 @@ function Log(props){
       var txt=data.content.map(function(i){return i.text||'';}).join('');
       var parsed=JSON.parse(txt);
       setQuickItems(parsed.items||[]);
-    }catch(e){setQuickError(e.message&&e.message.indexOf('timed out')>-1?e.message:'Could not parse that. Try rephrasing.');}
+    }catch(e){
+      var timedOut=e.message&&e.message.indexOf('timed out')>-1;
+      track('ai_request_failed',{action:'quickadd',reason:timedOut?'timeout':'error'});
+      setQuickError(timedOut?e.message:'Could not parse that. Try rephrasing.');
+    }
     setQuickLoading(false);
   }
   var kcal=log[meal].reduce(function(a,i){return a+i.e;},0);
@@ -770,7 +780,11 @@ function Scan(props){
       if(data.error)throw new Error(data.error.message||'Analysis failed');
       var txt=data.content.map(function(i){return i.text||'';}).join('');
       setResult(JSON.parse(txt));setLoading(false);
-    }catch(e){setError(e.message&&e.message.indexOf('timed out')>-1?e.message:'Analysis failed. Try a clearer photo.');setLoading(false);}
+    }catch(e){
+      var timedOut=e.message&&e.message.indexOf('timed out')>-1;
+      track('ai_request_failed',{action:'scan',reason:timedOut?'timeout':'error'});
+      setError(timedOut?e.message:'Analysis failed. Try a clearer photo.');setLoading(false);
+    }
   }
   function confirm(){
     if(!result)return;
@@ -872,10 +886,12 @@ function Metrics(props){
       var goalOffset=targetCalories-assumedMaintenance;
       var suggestedCalories=Math.max(1200,Math.round(actualMaintenance+goalOffset));
       if(Math.abs(suggestedCalories-targetCalories)<75){setRecal(null);return;}
+      track('recalibration_shown',{assumedMaintenance:assumedMaintenance,actualMaintenance:actualMaintenance,suggestedCalories:suggestedCalories});
       setRecal({assumedMaintenance:assumedMaintenance,actualMaintenance:actualMaintenance,suggestedCalories:suggestedCalories,days:Math.round(days),loggedDays:loggedDates.length});
     });
   },[userId,profile,targetCalories]);
   async function applyRecal(){
+    track('recalibration_accepted',{suggestedCalories:recal.suggestedCalories});
     var m=macrosFor(profile,recal.suggestedCalories);
     var newTargets={calories:recal.suggestedCalories,protein:m.protein,carbs:m.carbs,fat:m.fat,water:targets.water};
     setTargets(newTargets);
@@ -905,7 +921,7 @@ function Metrics(props){
           <div><Lbl ch={sw?'Lengo Linalopendekezwa':'Suggested Target'} style={{marginBottom:4}}/><div style={{color:W,fontSize:26,fontWeight:800,letterSpacing:'-0.02em'}}>{recal.suggestedCalories}<span style={{fontSize:13,color:W3,fontWeight:400}}> kcal</span></div></div>
           <div style={{textAlign:'right'}}><Lbl ch={sw?'Sasa':'Current'} style={{marginBottom:4}}/><div style={{color:W3,fontSize:16,fontWeight:600}}>{targets.calories}<span style={{fontSize:12}}> kcal</span></div></div>
         </div>
-        <div style={{display:'flex',gap:8}}><button className="bp" onClick={applyRecal}>{sw?'Sasisha Lengo':'Update My Target'}</button><button className="bg" onClick={function(){setRecal(null);}}>{sw?'Sio Sasa':'Not Now'}</button></div>
+        <div style={{display:'flex',gap:8}}><button className="bp" onClick={applyRecal}>{sw?'Sasisha Lengo':'Update My Target'}</button><button className="bg" onClick={function(){track('recalibration_dismissed');setRecal(null);}}>{sw?'Sio Sasa':'Not Now'}</button></div>
       </Card>)}
       <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:12}}><StatBox label={sw?'Uzito':'Weight'} value={(latest?latest.weight:profile.weight)+''} sub="kg"/><StatBox label={sw?'Mabadiliko':'Change'} value={change!==null?(Number(change)>0?'+':'')+change:'-'} sub="kg total"/><StatBox label="Score" value={score+''} sub="/ 100"/></div>
       {toGoal!==null&&(<Card style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><div><Lbl ch={sw?'Lengo':'Goal Weight'} style={{marginBottom:4}}/><div style={{color:W,fontSize:14,fontWeight:600}}>{profile.targetWeight} kg</div></div><div style={{textAlign:'right'}}><Lbl ch={sw?'Iliyobaki':'To Go'} style={{marginBottom:4}}/><div style={{color:W,fontSize:18,fontWeight:800}}>{Number(toGoal)===0?(sw?'Umefika!':'Reached!'):toGoal+' kg'}</div></div></Card>)}
@@ -965,7 +981,11 @@ function Profile(props){
       if(data.error)throw new Error(data.error.message||'Plan generation failed');
       var txt=data.content.map(function(i){return i.text||'';}).join('');
       setPlan(JSON.parse(txt));setPlanLoad(false);
-    }catch(e){setPlan({error:true,message:e.message&&e.message.indexOf('timed out')>-1?e.message:null});setPlanLoad(false);}
+    }catch(e){
+      var timedOut=e.message&&e.message.indexOf('timed out')>-1;
+      track('ai_request_failed',{action:'plan',reason:timedOut?'timeout':'error'});
+      setPlan({error:true,message:timedOut?e.message:null});setPlanLoad(false);
+    }
   }
   async function handleChangePassword(){
     if(!userEmail)return;
@@ -1088,6 +1108,14 @@ export default function NutriKenya(){
   var toastTimer=useRef(null);
   var authHandled=useRef(false);
 
+  // No client-side router in this app — tabs are state, not routes — so
+  // screen views need an explicit capture rather than posthog-js's
+  // URL-change autocapture (which is disabled in analytics.js for exactly
+  // this reason).
+  useEffect(function(){
+    if(screen==='app')track('screen_viewed',{screen:tab});
+  },[screen,tab]);
+
   function showToast(msg){if(toastTimer.current)clearTimeout(toastTimer.current);setToast(msg);toastTimer.current=setTimeout(function(){setToast(null);},2200);}
 
   function pushRecent(food){
@@ -1188,6 +1216,8 @@ export default function NutriKenya(){
     var isFirstToday=['breakfast','lunch','dinner','snacks'].every(function(m){return log[m].length===0;});
     setLog(function(l){var n=Object.assign({},l);n[meal]=l[meal].concat([Object.assign({},food,{_k:k,db_id:null})]);return n;});
     pushRecent(food);
+    var method={Restaurant:'restaurant','Quick Add':'quick_add',Barcode:'barcode','AI Scan':'ai_scan',Recent:'recent'}[food.cat]||'search';
+    track('food_logged',{method:method,meal:meal});
     setScore(function(s){var ns=Math.min(s+2,100);if(user&&user.id){supabase.from('profiles').update({score:ns}).eq('id',user.id);}return ns;});
     if(isFirstToday){setStreak(function(s){return s+1;});}
     if(!user||!user.id)return;
@@ -1205,6 +1235,7 @@ export default function NutriKenya(){
   async function handleAuthDone(userData){
     authHandled.current=true;
     setUser(userData);
+    identifyUser(userData.id,{email:userData.email});
     if(userData.id){
       var pRes=await supabase.from('profiles').select('*').eq('id',userData.id).single();
       if(pRes.data){
@@ -1259,6 +1290,7 @@ export default function NutriKenya(){
 
   function reset(){
     supabase.auth.signOut();
+    resetAnalytics();
     setUser(null);setProfile(null);setTargets(null);setScreen('auth');setTab('dashboard');
     setLog({breakfast:[],lunch:[],dinner:[],snacks:[]});setMetrics([]);setWater(0);setScore(68);setStreak(0);setFasting(false);setFStart(null);setRecentFoods([]);
     authHandled.current=false;
