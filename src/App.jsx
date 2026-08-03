@@ -34,6 +34,19 @@ const QS=[
 
 function clamp(v,lo,hi){return Math.max(lo,Math.min(v,hi));}
 
+// Least-squares slope (kg/day) through every weigh-in in the window, not
+// just the first and last — a single water-retention day can no longer
+// swing the whole trend the way an endpoint-to-endpoint delta would.
+function weightTrendSlope(points){
+  var n=points.length;
+  if(n<2)return 0;
+  var sumX=0,sumY=0,sumXY=0,sumXX=0;
+  points.forEach(function(p){sumX+=p.x;sumY+=p.y;sumXY+=p.x*p.y;sumXX+=p.x*p.x;});
+  var denom=n*sumXX-sumX*sumX;
+  if(denom===0)return 0;
+  return(n*sumXY-sumX*sumY)/denom;
+}
+
 function calcMaintenance(pr){
   var weight=clamp(pr.weight,20,300),height=clamp(pr.height,50,250),age=clamp(pr.age,10,100);
   var act=Math.max(0,Math.min(parseInt(pr.activity)||2,4));
@@ -577,10 +590,30 @@ function Log(props){
   var [quickLoading,setQuickLoading]=useState(false);
   var [quickItems,setQuickItems]=useState(null);
   var [quickError,setQuickError]=useState(null);
+  var [searchResults,setSearchResults]=useState(null);
+  var [searching,setSearching]=useState(false);
   var sw=lang==='sw';
   var mlEn={breakfast:'Breakfast',lunch:'Lunch',dinner:'Dinner',snacks:'Snacks'};
   var mlSw={breakfast:'Kifungua',lunch:'Mchana',dinner:'Jioni',snacks:'Vitafunio'};
-  var filtered=foods.filter(function(f){return f.n.toLowerCase().includes(search.toLowerCase())||f.s.toLowerCase().includes(search.toLowerCase());}).slice(0,10);
+  useEffect(function(){
+    // Trigram search runs server-side (pg_trgm) so it stays fast as the
+    // food table grows past what a client-side substring filter can handle
+    // — debounced so we're not firing an RPC on every keystroke. Clearing
+    // the search box resets search/searching from the input's own onChange
+    // instead of here, so this effect never needs to setState synchronously
+    // (setSearching itself is deferred into the timeout callback for the
+    // same reason).
+    if(!search)return;
+    var t=setTimeout(function(){
+      setSearching(true);
+      supabase.rpc('search_foods',{q:search}).then(function(res){
+        if(res.error){console.error(res.error);logError('food-search',res.error);setSearchResults([]);setSearching(false);return;}
+        var mapped=(res.data||[]).map(function(x){return{id:x.id,n:x.name_en,s:x.name_sw,e:Number(x.calories),p:Number(x.protein),c:Number(x.carbs),f:Number(x.fat),pr:x.portion,cat:x.category};});
+        setSearchResults(mapped);setSearching(false);
+      });
+    },250);
+    return function(){clearTimeout(t);};
+  },[search]);
   var filteredRests=restaurants.filter(function(r){
     var matchGrp=restGrp==='All'||r.g===restGrp;
     if(!matchGrp)return false;
@@ -687,9 +720,11 @@ function Log(props){
           </div>
           {src==='foods'&&(
             <div>
-              <input value={search} onChange={function(e){setSearch(e.target.value);}} autoFocus placeholder={sw?'Tafuta vyakula vya Kenya...':'Search Kenyan foods...'} style={{width:'100%',padding:'11px 13px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:10}}/>
+              <input value={search} onChange={function(e){var v=e.target.value;setSearch(v);if(!v){setSearchResults(null);setSearching(false);}}} autoFocus placeholder={sw?'Tafuta vyakula vya Kenya...':'Search Kenyan foods...'} style={{width:'100%',padding:'11px 13px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:10}}/>
               {foods.length===0&&<div style={{color:W3,fontSize:13,textAlign:'center',padding:'16px 0'}}>Loading foods...</div>}
-              {(search?filtered:foods.slice(0,8)).map(function(f,i,arr){return(<div key={f.id}><button className="fr" onClick={function(){openQty(f);}}><div><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?f.s:f.n}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{f.pr} · {f.cat}</div></div><div style={{textAlign:'right',flexShrink:0,marginLeft:10}}><div style={{color:W,fontSize:13,fontWeight:600}}>{f.e} kcal</div><div style={{color:W2,fontSize:11}}>{f.p}g P</div></div></button>{i<arr.length-1&&<Sep/>}</div>);})}
+              {search&&searching&&<div style={{color:W3,fontSize:13,textAlign:'center',padding:'16px 0'}}>Searching...</div>}
+              {search&&!searching&&searchResults&&searchResults.length===0&&<div style={{color:W3,fontSize:13,textAlign:'center',padding:'16px 0'}}>No foods found.</div>}
+              {(search?(searching?[]:(searchResults||[])):foods.slice(0,8)).map(function(f,i,arr){return(<div key={f.id}><button className="fr" onClick={function(){openQty(f);}}><div><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?f.s:f.n}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{f.pr} · {f.cat}</div></div><div style={{textAlign:'right',flexShrink:0,marginLeft:10}}><div style={{color:W,fontSize:13,fontWeight:600}}>{f.e} kcal</div><div style={{color:W2,fontSize:11}}>{f.p}g P</div></div></button>{i<arr.length-1&&<Sep/>}</div>);})}
             </div>
           )}
           {src==='restaurant'&&(
@@ -879,7 +914,9 @@ function Metrics(props){
       var firstW=weights[0],lastW=weights[weights.length-1];
       var days=(new Date(lastW.date)-new Date(firstW.date))/86400000;
       if(days<7){setRecal(null);return;}
-      var deltaWeight=Number(lastW.weight)-Number(firstW.weight);
+      var t0=new Date(firstW.date).getTime();
+      var slope=weightTrendSlope(weights.map(function(w){return{x:(new Date(w.date).getTime()-t0)/86400000,y:Number(w.weight)};}));
+      var deltaWeight=slope*days;
       var avgIntake=loggedDates.reduce(function(a,d){return a+byDate[d];},0)/loggedDates.length;
       var actualMaintenance=Math.round(avgIntake-(deltaWeight*7700)/days);
       var assumedMaintenance=Math.round(calcMaintenance(profile));
