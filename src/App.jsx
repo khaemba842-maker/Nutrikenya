@@ -891,13 +891,14 @@ function Log(props){
 
 // ── SCAN ──────────────────────────────────────────────────
 function Scan(props){
-  var addToLog=props.addToLog,lang=props.lang,showToast=props.showToast;
+  var addToLog=props.addToLog,lang=props.lang,showToast=props.showToast,userId=props.userId;
   var [img,setImg]=useState(null);
   var [loading,setLoading]=useState(false);
   var [result,setResult]=useState(null);
   var [error,setError]=useState(null);
   var [meal,setMeal]=useState('lunch');
   var [done,setDone]=useState(false);
+  var [restaurantName,setRestaurantName]=useState('');
   var ref=useRef();
   var sw=lang==='sw';
   async function analyze(imgData){
@@ -919,8 +920,17 @@ function Scan(props){
   function confirm(){
     if(!result)return;
     addToLog(meal,{n:result.food,s:result.food,e:result.calories,p:result.protein,c:result.carbs,f:result.fat,pr:result.portion,cat:'AI Scan'});
+    // Confirmed scans tagged with a restaurant become candidates for the
+    // restaurant database — once several independent scans of the same
+    // dish there converge on similar values, they're auto-promoted
+    // server-side (see try_promote_restaurant_candidate trigger).
+    if(restaurantName.trim()&&userId){
+      supabase.from('restaurant_scan_candidates').insert({user_id:userId,restaurant_name:restaurantName.trim(),food_name:result.food,calories:result.calories,protein:result.protein,carbs:result.carbs,fat:result.fat}).then(function(res){
+        if(res.error){console.error(res.error);logError('restaurant-candidate-insert',res.error,userId);}
+      });
+    }
     showToast(result.food+' added to '+meal);
-    setDone(true);setTimeout(function(){setImg(null);setResult(null);setDone(false);},1800);
+    setDone(true);setTimeout(function(){setImg(null);setResult(null);setDone(false);setRestaurantName('');},1800);
   }
   return(
     <div className="page" style={{padding:'24px 20px 100px',fontFamily:FF}}>
@@ -947,7 +957,7 @@ function Scan(props){
       {img&&error&&!loading&&!done&&<button className="bp" onClick={function(){analyze(img);}} style={{marginBottom:10}}>Retry Analysis</button>}
       {loading&&(<Card><div style={{color:W2,fontSize:11,letterSpacing:'0.12em',textTransform:'uppercase',marginBottom:12,textAlign:'center'}}>Analyzing your meal</div><div style={{height:1,background:C3,overflow:'hidden',position:'relative',borderRadius:1}}><div style={{position:'absolute',top:0,left:0,height:'100%',background:W,animation:'scanLine 1.4s ease-in-out infinite',width:'45%',borderRadius:1}}/></div></Card>)}
       {error&&<div style={{background:C1,border:'1px solid '+BD2,borderRadius:12,padding:14,color:W2,marginBottom:12,fontSize:13,lineHeight:1.5}}>{error}</div>}
-      {result&&!done&&(<Card><div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:18}}><div style={{flex:1,marginRight:10}}><div style={{color:W,fontSize:17,fontWeight:700,letterSpacing:'-0.02em',lineHeight:1.2}}>{result.food}</div><div style={{color:W2,fontSize:12,marginTop:4}}>{result.portion}{result.budgetKES?' · ~KES '+result.budgetKES:''}</div></div><span style={{background:C2,border:'1px solid '+BD,borderRadius:20,padding:'4px 10px',flexShrink:0,color:W2,fontSize:10,fontWeight:600,letterSpacing:'0.06em',textTransform:'uppercase'}}>{result.confidence}</span></div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:18}}>{[{l:'Calories',v:result.calories,u:'kcal'},{l:'Protein',v:result.protein,u:'g'},{l:'Carbs',v:result.carbs,u:'g'},{l:'Fat',v:result.fat,u:'g'}].map(function(m){return(<div key={m.l} style={{background:C2,border:'1px solid '+BD,borderRadius:10,padding:'12px'}}><Lbl ch={m.l} style={{marginBottom:5}}/><div style={{color:W,fontSize:20,fontWeight:700,letterSpacing:'-0.02em'}}>{m.v}<span style={{fontSize:11,color:W3,fontWeight:400}}> {m.u}</span></div></div>);})}</div>{result.notes&&<div style={{color:W2,fontSize:12,marginBottom:18,lineHeight:1.6}}>{result.notes}</div>}<button className="bp" onClick={confirm}>Add to {meal.charAt(0).toUpperCase()+meal.slice(1)}</button></Card>)}
+      {result&&!done&&(<Card><div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:18}}><div style={{flex:1,marginRight:10}}><div style={{color:W,fontSize:17,fontWeight:700,letterSpacing:'-0.02em',lineHeight:1.2}}>{result.food}</div><div style={{color:W2,fontSize:12,marginTop:4}}>{result.portion}{result.budgetKES?' · ~KES '+result.budgetKES:''}</div></div><span style={{background:C2,border:'1px solid '+BD,borderRadius:20,padding:'4px 10px',flexShrink:0,color:W2,fontSize:10,fontWeight:600,letterSpacing:'0.06em',textTransform:'uppercase'}}>{result.confidence}</span></div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:18}}>{[{l:'Calories',v:result.calories,u:'kcal'},{l:'Protein',v:result.protein,u:'g'},{l:'Carbs',v:result.carbs,u:'g'},{l:'Fat',v:result.fat,u:'g'}].map(function(m){return(<div key={m.l} style={{background:C2,border:'1px solid '+BD,borderRadius:10,padding:'12px'}}><Lbl ch={m.l} style={{marginBottom:5}}/><div style={{color:W,fontSize:20,fontWeight:700,letterSpacing:'-0.02em'}}>{m.v}<span style={{fontSize:11,color:W3,fontWeight:400}}> {m.u}</span></div></div>);})}</div>{result.notes&&<div style={{color:W2,fontSize:12,marginBottom:18,lineHeight:1.6}}>{result.notes}</div>}<input value={restaurantName} onChange={function(e){setRestaurantName(e.target.value);}} placeholder={sw?'Mgahawa (si lazima) — mfano "Java House"':'Restaurant (optional) — e.g. "Java House"'} style={{width:'100%',padding:'10px 12px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:13,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:14}}/><button className="bp" onClick={confirm}>Add to {meal.charAt(0).toUpperCase()+meal.slice(1)}</button></Card>)}
     </div>
   );
 }
@@ -1477,7 +1487,7 @@ export default function NutriKenya(){
       <div className="scroll-inner" style={{paddingBottom:'calc(68px + env(safe-area-inset-bottom))'}}>
         {tab==='dashboard'&&<Dash profile={profile} targets={targets} log={log} water={water} setWater={setWater} score={score} lang={lang} streak={streak} fasting={fasting} setFasting={setFasting} fStart={fStart} setFStart={setFStart} showToast={showToast} userId={user&&user.id} foods={foods}/>}
         {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants} recentFoods={recentFoods} addToLog={addToLog} savedMeals={savedMeals} saveMeal={saveMeal} deleteSavedMeal={deleteSavedMeal} logSavedMeal={logSavedMeal} suggestFood={suggestFood}/>}
-        {tab==='scan'&&<Scan addToLog={addToLog} lang={lang} showToast={showToast}/>}
+        {tab==='scan'&&<Scan addToLog={addToLog} lang={lang} showToast={showToast} userId={user&&user.id}/>}
         {tab==='metrics'&&<Metrics profile={profile} setProfile={setProfile} targets={targets} setTargets={setTargets} metrics={metrics} setMetrics={setMetrics} score={score} lang={lang} showToast={showToast} userId={user&&user.id}/>}
         {tab==='profile'&&<Profile profile={profile} targets={targets} lang={lang} setLang={setLang} score={score} streak={streak} setScore={setScore} onReset={reset} showToast={showToast} userEmail={user&&user.email} userId={user&&user.id} onLegal={function(doc){setLegalReturn('app');setScreen(doc);}}/>}
       </div>
