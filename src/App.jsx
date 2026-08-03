@@ -575,10 +575,13 @@ function BarcodeScan(props){
 }
 
 function Log(props){
-  var log=props.log,setLog=props.setLog,lang=props.lang,showToast=props.showToast,userId=props.userId,foods=props.foods||[],restaurants=props.restaurants||[],recentFoods=props.recentFoods||[],addToLog=props.addToLog,savedMeals=props.savedMeals||[],saveMeal=props.saveMeal,deleteSavedMeal=props.deleteSavedMeal,logSavedMeal=props.logSavedMeal;
+  var log=props.log,setLog=props.setLog,lang=props.lang,showToast=props.showToast,userId=props.userId,foods=props.foods||[],restaurants=props.restaurants||[],recentFoods=props.recentFoods||[],addToLog=props.addToLog,savedMeals=props.savedMeals||[],saveMeal=props.saveMeal,deleteSavedMeal=props.deleteSavedMeal,logSavedMeal=props.logSavedMeal,suggestFood=props.suggestFood;
   var [savingMeal,setSavingMeal]=useState(false);
   var [mealName,setMealName]=useState('');
   var [loggingSaved,setLoggingSaved]=useState(false);
+  var [suggesting,setSuggesting]=useState(false);
+  var [suggestForm,setSuggestForm]=useState({name_en:'',name_sw:'',calories:'',protein:'',carbs:'',fat:'',portion:''});
+  var [suggestBusy,setSuggestBusy]=useState(false);
   var [meal,setMeal]=useState('breakfast');
   var [adding,setAdding]=useState(false);
   var [src,setSrc]=useState('foods');
@@ -631,6 +634,15 @@ function Log(props){
     showToast(food.n+' added');setSearch('');setAdding(false);setPending(null);setQty(1);setLogging(false);
   }
   function openQty(food){setPending(food);setQty(1);}
+  async function submitSuggestion(){
+    if(!userId||!suggestFood)return;
+    var f=suggestForm;
+    if(!f.name_en.trim()||!f.calories)return;
+    setSuggestBusy(true);
+    var saved=await suggestFood({name_en:f.name_en.trim(),name_sw:f.name_sw.trim(),calories:Number(f.calories)||0,protein:Number(f.protein)||0,carbs:Number(f.carbs)||0,fat:Number(f.fat)||0,portion:f.portion.trim()||'1 serving'});
+    setSuggestBusy(false);
+    if(saved){setSuggesting(false);setSuggestForm({name_en:'',name_sw:'',calories:'',protein:'',carbs:'',fat:'',portion:''});}
+  }
   function scaledFood(food,q){
     return Object.assign({},food,{
       e:Math.round((food.e||0)*q),
@@ -738,7 +750,24 @@ function Log(props){
               {foods.length===0&&<div style={{color:W3,fontSize:13,textAlign:'center',padding:'16px 0'}}>Loading foods...</div>}
               {search&&searching&&<div style={{color:W3,fontSize:13,textAlign:'center',padding:'16px 0'}}>Searching...</div>}
               {search&&!searching&&searchResults&&searchResults.length===0&&<div style={{color:W3,fontSize:13,textAlign:'center',padding:'16px 0'}}>No foods found.</div>}
-              {(search?(searching?[]:(searchResults||[])):foods.slice(0,8)).map(function(f,i,arr){return(<div key={f.id}><button className="fr" onClick={function(){openQty(f);}}><div><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?f.s:f.n}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{f.pr} · {f.cat}</div></div><div style={{textAlign:'right',flexShrink:0,marginLeft:10}}><div style={{color:W,fontSize:13,fontWeight:600}}>{f.e} kcal</div><div style={{color:W2,fontSize:11}}>{f.p}g P</div></div></button>{i<arr.length-1&&<Sep/>}</div>);})}
+              {(search?(searching?[]:(searchResults||[])):foods.slice(0,8)).map(function(f,i,arr){return(<div key={f.id}><button className="fr" onClick={function(){openQty(f);}}><div><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?f.s:f.n}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{f.pr} · {f.cat}{f.cat==='Suggested'&&' · pending review'}</div></div><div style={{textAlign:'right',flexShrink:0,marginLeft:10}}><div style={{color:W,fontSize:13,fontWeight:600}}>{f.e} kcal</div><div style={{color:W2,fontSize:11}}>{f.p}g P</div></div></button>{i<arr.length-1&&<Sep/>}</div>);})}
+              {userId&&suggestFood&&(suggesting?(
+                <div style={{marginTop:14,paddingTop:14,borderTop:'1px solid '+BD}}>
+                  <Lbl ch={sw?'Pendekeza Chakula':'Suggest a Food'} style={{marginBottom:10}}/>
+                  <input value={suggestForm.name_en} onChange={function(e){setSuggestForm(function(s){return Object.assign({},s,{name_en:e.target.value});});}} autoFocus placeholder={sw?'Jina la chakula':'Food name'} style={{width:'100%',padding:'10px 12px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:8}}/>
+                  <input value={suggestForm.portion} onChange={function(e){setSuggestForm(function(s){return Object.assign({},s,{portion:e.target.value});});}} placeholder={sw?'Kiasi, mfano "1 kikombe"':'Portion, e.g. "1 cup"'} style={{width:'100%',padding:'10px 12px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:8}}/>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:12}}>
+                    {[{k:'calories',l:'Cal'},{k:'protein',l:'Protein'},{k:'carbs',l:'Carbs'},{k:'fat',l:'Fat'}].map(function(f){return(<input key={f.k} type="number" value={suggestForm[f.k]} onChange={function(e){var v=e.target.value;setSuggestForm(function(s){var n=Object.assign({},s);n[f.k]=v;return n;});}} placeholder={f.l} style={{width:'100%',padding:'8px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:13,outline:'none',boxSizing:'border-box',fontFamily:FF,textAlign:'center'}}/>);})}
+                  </div>
+                  <div style={{color:W3,fontSize:11,marginBottom:12,lineHeight:1.5}}>{sw?'Kitaonekana kwako pekee mpaka kikaguliwe.':'Visible only to you until it\'s reviewed.'}</div>
+                  <div style={{display:'flex',gap:8}}>
+                    <button className="bp" disabled={!suggestForm.name_en.trim()||!suggestForm.calories||suggestBusy} onClick={submitSuggestion}>{suggestBusy?(sw?'Inatuma...':'Submitting...'):(sw?'Tuma':'Submit')}</button>
+                    <button className="bg" onClick={function(){setSuggesting(false);}}>{sw?'Ghairi':'Cancel'}</button>
+                  </div>
+                </div>
+              ):(
+                <button className="bg" onClick={function(){setSuggesting(true);}} style={{marginTop:14}}>{sw?"Huoni chakula? Kipendekeze":"Can't find it? Suggest a food"}</button>
+              ))}
             </div>
           )}
           {src==='restaurant'&&(
@@ -1327,6 +1356,18 @@ export default function NutriKenya(){
     }
   }
 
+  async function suggestFood(f){
+    if(!user||!user.id)return null;
+    var row={name_en:f.name_en,name_sw:f.name_sw||f.name_en,calories:f.calories,protein:f.protein,carbs:f.carbs,fat:f.fat,portion:f.portion,category:'Suggested',verified:false,submitted_by:user.id};
+    var res=await supabase.from('foods').insert(row).select('*').single();
+    if(res.error){console.error(res.error);logError('food-suggest',res.error,user.id);showToast("Couldn't submit — try again");return null;}
+    var mapped={id:res.data.id,n:res.data.name_en,s:res.data.name_sw,e:Number(res.data.calories),p:Number(res.data.protein),c:Number(res.data.carbs),f:Number(res.data.fat),pr:res.data.portion,cat:res.data.category};
+    setFoods(function(list){return list.concat([mapped]);});
+    track('food_suggested');
+    showToast('Submitted for review — visible to you until then');
+    return mapped;
+  }
+
   async function handleAuthDone(userData){
     authHandled.current=true;
     setUser(userData);
@@ -1403,7 +1444,7 @@ export default function NutriKenya(){
       <GS/>
       <div className="scroll-inner" style={{paddingBottom:'calc(68px + env(safe-area-inset-bottom))'}}>
         {tab==='dashboard'&&<Dash profile={profile} targets={targets} log={log} water={water} setWater={setWater} score={score} lang={lang} streak={streak} fasting={fasting} setFasting={setFasting} fStart={fStart} setFStart={setFStart} showToast={showToast} userId={user&&user.id} foods={foods}/>}
-        {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants} recentFoods={recentFoods} addToLog={addToLog} savedMeals={savedMeals} saveMeal={saveMeal} deleteSavedMeal={deleteSavedMeal} logSavedMeal={logSavedMeal}/>}
+        {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants} recentFoods={recentFoods} addToLog={addToLog} savedMeals={savedMeals} saveMeal={saveMeal} deleteSavedMeal={deleteSavedMeal} logSavedMeal={logSavedMeal} suggestFood={suggestFood}/>}
         {tab==='scan'&&<Scan addToLog={addToLog} lang={lang} showToast={showToast}/>}
         {tab==='metrics'&&<Metrics profile={profile} setProfile={setProfile} targets={targets} setTargets={setTargets} metrics={metrics} setMetrics={setMetrics} score={score} lang={lang} showToast={showToast} userId={user&&user.id}/>}
         {tab==='profile'&&<Profile profile={profile} targets={targets} lang={lang} setLang={setLang} score={score} streak={streak} setScore={setScore} onReset={reset} showToast={showToast} userEmail={user&&user.email} userId={user&&user.id} onLegal={function(doc){setLegalReturn('app');setScreen(doc);}}/>}
