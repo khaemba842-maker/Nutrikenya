@@ -2,6 +2,7 @@ import { supabase } from './supabase'
 import { logError } from './errorLog'
 import { queueWrite, cancelQueued, registerHandler, installOnlineFlush, queueLength, onQueueChange } from './offlineQueue'
 import { pushSupported, getPushSubscription, subscribeToPush, unsubscribeFromPush } from './push'
+import { track, identifyUser, resetAnalytics } from './analytics'
 import { useState, useRef, useEffect } from "react";
 
 const BG='#070707',C1='#0D0D0D',C2='#141414',C3='#1C1C1C',C4='#252525';
@@ -9,6 +10,31 @@ const W='#FFFFFF',W2='#7A7A7A',W3='#404040';
 const BD='rgba(255,255,255,0.06)',BD2='rgba(255,255,255,0.13)';
 const FF=`-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif`;
 const REST_GROUPS=['All','Fast Food','Kenyan & African','Casual Dining','Grills & Steakhouse','Fine Dining','Modern & Trendy'];
+
+// Coverage is partial by design — populated for the highest-frequency foods
+// first per the "power law of diet" argument, not every row. Missing values
+// stay null rather than a fabricated 0, so the Micronutrients card can tell
+// "none logged" apart from "no data for this food."
+var MICRO_KEYS=['iron_mg','vitamin_a_mcg','vitamin_b12_mcg','folate_mcg','calcium_mg','zinc_mg','vitamin_c_mg','magnesium_mg','potassium_mg','fiber_g','vitamin_d_mcg','vitamin_b6_mg'];
+var MICRO_META=[
+  {k:'iron_mg',l:'Iron',u:'mg',rdi:18},
+  {k:'vitamin_a_mcg',l:'Vitamin A',u:'mcg',rdi:900},
+  {k:'vitamin_b12_mcg',l:'Vitamin B12',u:'mcg',rdi:2.4},
+  {k:'folate_mcg',l:'Folate',u:'mcg',rdi:400},
+  {k:'calcium_mg',l:'Calcium',u:'mg',rdi:1000},
+  {k:'zinc_mg',l:'Zinc',u:'mg',rdi:11},
+  {k:'vitamin_c_mg',l:'Vitamin C',u:'mg',rdi:90},
+  {k:'magnesium_mg',l:'Magnesium',u:'mg',rdi:400},
+  {k:'potassium_mg',l:'Potassium',u:'mg',rdi:3500},
+  {k:'fiber_g',l:'Fiber',u:'g',rdi:30},
+  {k:'vitamin_d_mcg',l:'Vitamin D',u:'mcg',rdi:15},
+  {k:'vitamin_b6_mg',l:'Vitamin B6',u:'mg',rdi:1.3},
+];
+function mapFoodRow(x){
+  var o={id:x.id,n:x.name_en,s:x.name_sw,e:Number(x.calories),p:Number(x.protein),c:Number(x.carbs),f:Number(x.fat),pr:x.portion,cat:x.category};
+  MICRO_KEYS.forEach(function(k){o[k]=x[k]!=null?Number(x[k]):null;});
+  return o;
+}
 
 const QS=[
   {id:'name',q:"What should we call you?",qs:"Jina lako nani?",type:'text',ph:'Your name'},
@@ -32,6 +58,19 @@ const QS=[
 ];
 
 function clamp(v,lo,hi){return Math.max(lo,Math.min(v,hi));}
+
+// Least-squares slope (kg/day) through every weigh-in in the window, not
+// just the first and last — a single water-retention day can no longer
+// swing the whole trend the way an endpoint-to-endpoint delta would.
+function weightTrendSlope(points){
+  var n=points.length;
+  if(n<2)return 0;
+  var sumX=0,sumY=0,sumXY=0,sumXX=0;
+  points.forEach(function(p){sumX+=p.x;sumY+=p.y;sumXY+=p.x*p.y;sumXX+=p.x*p.x;});
+  var denom=n*sumXX-sumX*sumX;
+  if(denom===0)return 0;
+  return(n*sumXY-sumX*sumY)/denom;
+}
 
 function calcMaintenance(pr){
   var weight=clamp(pr.weight,20,300),height=clamp(pr.height,50,250),age=clamp(pr.age,10,100);
@@ -214,10 +253,12 @@ function Auth(props){
       if(mode==='login'){
         r=await supabase.auth.signInWithPassword({email:cleanEmail,password:password});
         if(r.error)throw r.error;
+        track('login_completed');
         props.onDone({name:cleanEmail.split('@')[0],email:cleanEmail,id:r.data.user.id});
       } else {
         r=await supabase.auth.signUp({email:cleanEmail,password:password,options:{emailRedirectTo:'https://nutrikenya.vercel.app'}});
         if(r.error)throw r.error;
+        track('signup_completed');
         setConfirmed(true);
       }
     }catch(e){showToast(e.message||'Something went wrong.');}
@@ -358,18 +399,21 @@ function Onboard(props){
   var [htFt,setHtFt]=useState('');
   var [htIn,setHtIn]=useState('');
   var q=QS[step],sw=props.lang==='sw';
+  useEffect(function(){track('onboarding_started');},[]);
   function htCm(){return htUnit==='cm'?(parseFloat(val)||170):Math.round(parseFloat(htFt||0)*30.48+parseFloat(htIn||0)*2.54)||170;}
   var htOk=q.type==='height'?(htUnit==='cm'?!!val:(!!htFt||!!htIn)):true;
   function next(v){
     var a=Object.assign({},ans);
     a[q.id]=q.id==='height'?htCm():(v!==undefined?v:val);
     setAns(a);setVal('');
+    track('onboarding_step_completed',{step:step,question_id:q.id});
     if(step===QS.length-1){
       var gl=a.goal;
       var goal=(gl&&(gl.includes('Lose')||gl.includes('Kupunguza')))?'lose':(gl&&(gl.includes('Build')||gl.includes('Kujenga')))?'gain':(gl&&(gl.includes('Recomp')||gl.includes('Kubadilisha')))?'recomp':'maintain';
       var sp=a.speed;
       var speed=(sp&&(sp.includes('Slow')||sp.includes('Polepole')))?'slow':(sp&&(sp.includes('Aggressive')||sp.includes('Haraka')))?'aggressive':'moderate';
       var actIdx=['Sedentary','Lightly','Moderately','Very Active','Extremely'].findIndex(function(x){return a.activity&&a.activity.includes(x);});
+      track('onboarding_completed',{goal:goal,speed:speed});
       props.onDone({name:a.name||props.uname,age:parseInt(a.age)||25,sex:(a.sex==='Male'||a.sex==='Mume')?'male':'female',weight:parseFloat(a.weight)||70,height:parseFloat(a.height)||170,goal:goal,speed:speed,activity:Math.max(0,actIdx<0?2:actIdx),workoutDays:parseInt(a.workoutDays)||3,workoutType:a.workoutType,restrictions:a.restrictions||'None',targetWeight:parseFloat(a.targetWeight)||0});
     } else {setStep(function(s){return s+1;});}
   }
@@ -422,6 +466,10 @@ function Dash(props){
   var all=log.breakfast.concat(log.lunch,log.dinner,log.snacks);
   var tot=all.reduce(function(a,i){return{cal:a.cal+i.e,p:a.p+i.p,c:a.c+i.c,f:a.f+i.f};},{cal:0,p:0,c:0,f:0});
   var rem=Math.max(targets.calories-tot.cal,0);
+  var microTotals=MICRO_META.map(function(m){
+    var logged=all.filter(function(i){return i[m.k]!=null;});
+    return{meta:m,val:logged.reduce(function(a,i){return a+i[m.k];},0),hasData:logged.length>0};
+  }).filter(function(x){return x.hasData;});
   var hr=new Date().getHours();
   var greet=hr<12?'Morning':hr<17?'Afternoon':'Evening';
   var mLbls={breakfast:'Breakfast',lunch:'Lunch',dinner:'Dinner',snacks:'Snacks'};
@@ -447,6 +495,7 @@ function Dash(props){
       </div>
       <Card><div style={{display:'flex',alignItems:'center',gap:20}}><Ring val={tot.cal} max={targets.calories} sz={144} th={11}><div style={{fontSize:24,fontWeight:800,color:W,letterSpacing:'-0.03em'}}>{Math.round(tot.cal)}</div><div style={{color:W3,fontSize:10,letterSpacing:'0.06em',textTransform:'uppercase'}}>eaten</div></Ring><div style={{flex:1}}><Lbl ch={sw?'Zilizobaki':'Remaining'} style={{marginBottom:4}}/><div style={{fontSize:38,fontWeight:900,color:W,letterSpacing:'-0.04em',lineHeight:1}}>{rem}</div><div style={{color:W3,fontSize:12,marginBottom:14}}>of {targets.calories} kcal</div><div style={{height:1,background:BD,marginBottom:10}}/><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>{[{l:'Protein',v:targets.protein+'g'},{l:'Carbs',v:targets.carbs+'g'},{l:'Fat',v:targets.fat+'g'},{l:'Water',v:(targets.water/1000).toFixed(1)+'L'}].map(function(x,i){return(<div key={i}><Lbl ch={x.l} style={{marginBottom:2}}/><div style={{color:W,fontSize:12,fontWeight:600}}>{x.v}</div></div>);})}</div></div></div></Card>
       <Card><Lbl ch={sw?'Virutubisho':'Macronutrients'} style={{marginBottom:18}}/><Bar label={sw?'Protini':'Protein'} val={tot.p} max={targets.protein}/><Bar label={sw?'Wanga':'Carbohydrates'} val={tot.c} max={targets.carbs}/><Bar label={sw?'Mafuta':'Fat'} val={tot.f} max={targets.fat}/><div style={{height:1,background:BD,margin:'16px 0'}}/><Bar label={sw?'Maji':'Water'} val={water} max={targets.water} unit="ml"/><div style={{display:'flex',gap:8,marginTop:12}}>{[250,500].map(function(v){return(<button key={v} className="wb" onClick={function(){handleWater(v);}}>+{v} ml</button>);})}</div></Card>
+      {microTotals.length>0&&(<Card><Lbl ch={sw?'Virutubisho Vidogo':'Micronutrients'} style={{marginBottom:8}}/><div style={{color:W3,fontSize:11,marginBottom:16,lineHeight:1.5}}>{sw?'Kutoka kwa vyakula vilivyo na data — sio milo yote inavyo.':'From foods with data available — not every logged item has this yet.'}</div>{microTotals.map(function(x){return(<Bar key={x.meta.k} label={x.meta.l} val={x.val} max={x.meta.rdi} unit={x.meta.u}/>);})}</Card>)}
       <Card><Lbl ch={sw?'Milo ya Leo':"Today's Meals"} style={{marginBottom:14}}/>{['breakfast','lunch','dinner','snacks'].map(function(m,i,arr){var items=log[m],kcal=items.reduce(function(a,x){return a+x.e;},0);return(<div key={m}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'11px 0'}}><div><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?mLblsSw[m]:mLbls[m]}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{items.length>0?items.length+' item'+(items.length!==1?'s':''):'Empty'}</div></div><div style={{color:kcal>0?W:W3,fontSize:14,fontWeight:600}}>{kcal>0?kcal+' kcal':'—'}</div></div>{i<arr.length-1&&<Sep/>}</div>);})}</Card>
       {highProtein.length>0&&<Card><Lbl ch="Smart Picks — High Protein" style={{marginBottom:12}}/><div style={{color:W2,fontSize:13,marginBottom:12,lineHeight:1.5}}>{Math.round(Math.max(targets.protein-tot.p,0))}g protein left today</div>{highProtein.map(function(f,i,arr){return(<div key={f.id}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 0'}}><div><div style={{color:W,fontSize:13,fontWeight:500}}>{sw?f.s:f.n}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{f.pr}</div></div><div style={{textAlign:'right'}}><div style={{color:W,fontSize:13,fontWeight:600}}>{f.p}g protein</div><div style={{color:W3,fontSize:11}}>{f.e} kcal</div></div></div>{i<arr.length-1&&<Sep/>}</div>);})}</Card>}
       <Card style={{border:'1px solid '+(fasting?BD2:BD)}}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><div><Lbl ch={sw?'Kipindi cha Kufunga':'Fasting Timer'} style={{marginBottom:8}}/><div style={{color:W,fontSize:32,fontWeight:700,letterSpacing:'0.04em',fontVariantNumeric:'tabular-nums'}}>{fmtT(elapsed)}</div><div style={{color:W3,fontSize:11,marginTop:4,letterSpacing:'0.04em',textTransform:'uppercase'}}>{fasting?'Active':'Not active'}</div></div><button className="bp" onClick={function(){setFasting(function(f){if(f){setFStart(null);setElapsed(0);}return!f;});}} style={{width:'auto',padding:'12px 20px',letterSpacing:'0.06em',textTransform:'uppercase',fontSize:12}}>{fasting?'Stop':'Start'}</button></div></Card>
@@ -556,7 +605,33 @@ function BarcodeScan(props){
 }
 
 function Log(props){
-  var log=props.log,setLog=props.setLog,lang=props.lang,showToast=props.showToast,userId=props.userId,foods=props.foods||[],restaurants=props.restaurants||[],recentFoods=props.recentFoods||[],addToLog=props.addToLog;
+  var log=props.log,setLog=props.setLog,lang=props.lang,showToast=props.showToast,userId=props.userId,foods=props.foods||[],restaurants=props.restaurants||[],recentFoods=props.recentFoods||[],addToLog=props.addToLog,savedMeals=props.savedMeals||[],saveMeal=props.saveMeal,deleteSavedMeal=props.deleteSavedMeal,logSavedMeal=props.logSavedMeal,suggestFood=props.suggestFood;
+  var [savingMeal,setSavingMeal]=useState(false);
+  var [mealName,setMealName]=useState('');
+  var [loggingSaved,setLoggingSaved]=useState(false);
+  var [suggesting,setSuggesting]=useState(false);
+  var [suggestForm,setSuggestForm]=useState({name_en:'',name_sw:'',calories:'',protein:'',carbs:'',fat:'',portion:''});
+  var [suggestBusy,setSuggestBusy]=useState(false);
+  var [listening,setListening]=useState(false);
+  var recognitionRef=useRef(null);
+  var SpeechRecognitionCtor=typeof window!=='undefined'?(window.SpeechRecognition||window.webkitSpeechRecognition):null;
+  function toggleVoice(){
+    if(!SpeechRecognitionCtor)return;
+    if(listening){recognitionRef.current&&recognitionRef.current.stop();return;}
+    var rec=new SpeechRecognitionCtor();
+    rec.lang=lang==='sw'?'sw-KE':'en-KE';
+    rec.interimResults=false;
+    rec.maxAlternatives=1;
+    rec.onresult=function(e){
+      var transcript=e.results[0][0].transcript;
+      setQuickText(function(t){return(t?t+' ':'')+transcript;});
+    };
+    rec.onerror=function(){setListening(false);showToast(sw?'Sauti haikutambulika. Jaribu tena.':'Could not hear that. Try again.');};
+    rec.onend=function(){setListening(false);};
+    recognitionRef.current=rec;
+    setListening(true);
+    rec.start();
+  }
   var [meal,setMeal]=useState('breakfast');
   var [adding,setAdding]=useState(false);
   var [src,setSrc]=useState('foods');
@@ -571,10 +646,30 @@ function Log(props){
   var [quickLoading,setQuickLoading]=useState(false);
   var [quickItems,setQuickItems]=useState(null);
   var [quickError,setQuickError]=useState(null);
+  var [searchResults,setSearchResults]=useState(null);
+  var [searching,setSearching]=useState(false);
   var sw=lang==='sw';
   var mlEn={breakfast:'Breakfast',lunch:'Lunch',dinner:'Dinner',snacks:'Snacks'};
   var mlSw={breakfast:'Kifungua',lunch:'Mchana',dinner:'Jioni',snacks:'Vitafunio'};
-  var filtered=foods.filter(function(f){return f.n.toLowerCase().includes(search.toLowerCase())||f.s.toLowerCase().includes(search.toLowerCase());}).slice(0,10);
+  useEffect(function(){
+    // Trigram search runs server-side (pg_trgm) so it stays fast as the
+    // food table grows past what a client-side substring filter can handle
+    // — debounced so we're not firing an RPC on every keystroke. Clearing
+    // the search box resets search/searching from the input's own onChange
+    // instead of here, so this effect never needs to setState synchronously
+    // (setSearching itself is deferred into the timeout callback for the
+    // same reason).
+    if(!search)return;
+    var t=setTimeout(function(){
+      setSearching(true);
+      supabase.rpc('search_foods',{q:search}).then(function(res){
+        if(res.error){console.error(res.error);logError('food-search',res.error);setSearchResults([]);setSearching(false);return;}
+        var mapped=(res.data||[]).map(mapFoodRow);
+        setSearchResults(mapped);setSearching(false);
+      });
+    },250);
+    return function(){clearTimeout(t);};
+  },[search]);
   var filteredRests=restaurants.filter(function(r){
     var matchGrp=restGrp==='All'||r.g===restGrp;
     if(!matchGrp)return false;
@@ -589,14 +684,25 @@ function Log(props){
     showToast(food.n+' added');setSearch('');setAdding(false);setPending(null);setQty(1);setLogging(false);
   }
   function openQty(food){setPending(food);setQty(1);}
+  async function submitSuggestion(){
+    if(!userId||!suggestFood)return;
+    var f=suggestForm;
+    if(!f.name_en.trim()||!f.calories)return;
+    setSuggestBusy(true);
+    var saved=await suggestFood({name_en:f.name_en.trim(),name_sw:f.name_sw.trim(),calories:Number(f.calories)||0,protein:Number(f.protein)||0,carbs:Number(f.carbs)||0,fat:Number(f.fat)||0,portion:f.portion.trim()||'1 serving'});
+    setSuggestBusy(false);
+    if(saved){setSuggesting(false);setSuggestForm({name_en:'',name_sw:'',calories:'',protein:'',carbs:'',fat:'',portion:''});}
+  }
   function scaledFood(food,q){
-    return Object.assign({},food,{
+    var scaled=Object.assign({},food,{
       e:Math.round((food.e||0)*q),
       p:Math.round((food.p||0)*q*10)/10,
       c:Math.round((food.c||0)*q*10)/10,
       f:Math.round((food.f||0)*q*10)/10,
       pr:q===1?food.pr:(q+'× '+(food.pr||'serving')),
     });
+    MICRO_KEYS.forEach(function(k){scaled[k]=food[k]!=null?Math.round(food[k]*q*100)/100:null;});
+    return scaled;
   }
   async function rm(key,k){
     var item=log[key].find(function(x){return x._k===k;});
@@ -625,7 +731,11 @@ function Log(props){
       var txt=data.content.map(function(i){return i.text||'';}).join('');
       var parsed=JSON.parse(txt);
       setQuickItems(parsed.items||[]);
-    }catch(e){setQuickError(e.message&&e.message.indexOf('timed out')>-1?e.message:'Could not parse that. Try rephrasing.');}
+    }catch(e){
+      var timedOut=e.message&&e.message.indexOf('timed out')>-1;
+      track('ai_request_failed',{action:'quickadd',reason:timedOut?'timeout':'error'});
+      setQuickError(timedOut?e.message:'Could not parse that. Try rephrasing.');
+    }
     setQuickLoading(false);
   }
   var kcal=log[meal].reduce(function(a,i){return a+i.e;},0);
@@ -643,6 +753,17 @@ function Log(props){
         {log[meal].length===0
           ?<div style={{display:'flex',flexDirection:'column',alignItems:'center',padding:'20px 0',gap:8}}><IcPlus s={24} c={C4}/><div style={{color:W3,fontSize:13,letterSpacing:'0.04em'}}>Nothing logged yet</div></div>
           :log[meal].map(function(item,i,arr){return(<div key={item._k||i}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'11px 0'}}><div style={{flex:1,marginRight:12}}><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?item.s:item.n}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{item.pr}</div></div><div style={{display:'flex',alignItems:'center',gap:10}}><div style={{textAlign:'right'}}><div style={{color:W,fontSize:13,fontWeight:600}}>{item.e} kcal</div><div style={{color:W3,fontSize:10,marginTop:2}}>{item.p}P · {item.c}C · {item.f}F</div></div><button onClick={function(){rm(meal,item._k);}} aria-label={'Remove '+item.n} style={{background:'none',border:'none',cursor:'pointer',padding:4,display:'flex'}}><IcX s={14} c={W3}/></button></div></div>{i<arr.length-1&&<Sep/>}</div>);})}
+        {log[meal].length>0&&(savingMeal?(
+          <div style={{marginTop:14}}>
+            <input value={mealName} onChange={function(e){setMealName(e.target.value);}} autoFocus placeholder={sw?'Jina la mlo, mfano "Kifungua Kinywa Changu"':'Meal name, e.g. "My Usual Breakfast"'} style={{width:'100%',padding:'11px 13px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:10}}/>
+            <div style={{display:'flex',gap:8}}>
+              <button className="bp" disabled={!mealName.trim()} onClick={async function(){await saveMeal(mealName.trim(),log[meal]);setSavingMeal(false);setMealName('');}}>{sw?'Hifadhi':'Save'}</button>
+              <button className="bg" onClick={function(){setSavingMeal(false);setMealName('');}}>{sw?'Ghairi':'Cancel'}</button>
+            </div>
+          </div>
+        ):(
+          <button className="bg" onClick={function(){setSavingMeal(true);}} style={{marginTop:14}}>{sw?'+ Hifadhi kama Mlo':'+ Save as Meal'}</button>
+        ))}
       </Card>
       {recentFoods.length>0&&!adding&&!pending&&(
         <Card>
@@ -673,13 +794,32 @@ function Log(props){
       {adding?(
         <Card>
           <div style={{display:'flex',gap:6,marginBottom:16,overflowX:'auto',paddingBottom:2}}>
-            {[{v:'foods',l:sw?'Vyakula':'Foods'},{v:'restaurant',l:sw?'Migahawa':'Restaurants'},{v:'quick',l:sw?'Andika':'Quick Add'},{v:'barcode',l:sw?'Bakoodi':'Barcode'}].map(function(t){var active=src===t.v;return(<button key={t.v} className="pill" onClick={function(){setSrc(t.v);}} style={{border:'1px solid '+(active?W:BD),background:active?W:'transparent',color:active?BG:W2,padding:'7px 12px',flexShrink:0}}>{t.l}</button>);})}
+            {[{v:'foods',l:sw?'Vyakula':'Foods'},{v:'restaurant',l:sw?'Migahawa':'Restaurants'},{v:'quick',l:sw?'Andika':'Quick Add'},{v:'barcode',l:sw?'Bakoodi':'Barcode'},{v:'saved',l:sw?'Milo Iliyohifadhiwa':'Saved Meals'}].map(function(t){var active=src===t.v;return(<button key={t.v} className="pill" onClick={function(){setSrc(t.v);}} style={{border:'1px solid '+(active?W:BD),background:active?W:'transparent',color:active?BG:W2,padding:'7px 12px',flexShrink:0}}>{t.l}</button>);})}
           </div>
           {src==='foods'&&(
             <div>
-              <input value={search} onChange={function(e){setSearch(e.target.value);}} autoFocus placeholder={sw?'Tafuta vyakula vya Kenya...':'Search Kenyan foods...'} style={{width:'100%',padding:'11px 13px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:10}}/>
+              <input value={search} onChange={function(e){var v=e.target.value;setSearch(v);if(!v){setSearchResults(null);setSearching(false);}}} autoFocus placeholder={sw?'Tafuta vyakula vya Kenya...':'Search Kenyan foods...'} style={{width:'100%',padding:'11px 13px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:10}}/>
               {foods.length===0&&<div style={{color:W3,fontSize:13,textAlign:'center',padding:'16px 0'}}>Loading foods...</div>}
-              {(search?filtered:foods.slice(0,8)).map(function(f,i,arr){return(<div key={f.id}><button className="fr" onClick={function(){openQty(f);}}><div><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?f.s:f.n}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{f.pr} · {f.cat}</div></div><div style={{textAlign:'right',flexShrink:0,marginLeft:10}}><div style={{color:W,fontSize:13,fontWeight:600}}>{f.e} kcal</div><div style={{color:W2,fontSize:11}}>{f.p}g P</div></div></button>{i<arr.length-1&&<Sep/>}</div>);})}
+              {search&&searching&&<div style={{color:W3,fontSize:13,textAlign:'center',padding:'16px 0'}}>Searching...</div>}
+              {search&&!searching&&searchResults&&searchResults.length===0&&<div style={{color:W3,fontSize:13,textAlign:'center',padding:'16px 0'}}>No foods found.</div>}
+              {(search?(searching?[]:(searchResults||[])):foods.slice(0,8)).map(function(f,i,arr){return(<div key={f.id}><button className="fr" onClick={function(){openQty(f);}}><div><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?f.s:f.n}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{f.pr} · {f.cat}{f.cat==='Suggested'&&' · pending review'}</div></div><div style={{textAlign:'right',flexShrink:0,marginLeft:10}}><div style={{color:W,fontSize:13,fontWeight:600}}>{f.e} kcal</div><div style={{color:W2,fontSize:11}}>{f.p}g P</div></div></button>{i<arr.length-1&&<Sep/>}</div>);})}
+              {userId&&suggestFood&&(suggesting?(
+                <div style={{marginTop:14,paddingTop:14,borderTop:'1px solid '+BD}}>
+                  <Lbl ch={sw?'Pendekeza Chakula':'Suggest a Food'} style={{marginBottom:10}}/>
+                  <input value={suggestForm.name_en} onChange={function(e){setSuggestForm(function(s){return Object.assign({},s,{name_en:e.target.value});});}} autoFocus placeholder={sw?'Jina la chakula':'Food name'} style={{width:'100%',padding:'10px 12px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:8}}/>
+                  <input value={suggestForm.portion} onChange={function(e){setSuggestForm(function(s){return Object.assign({},s,{portion:e.target.value});});}} placeholder={sw?'Kiasi, mfano "1 kikombe"':'Portion, e.g. "1 cup"'} style={{width:'100%',padding:'10px 12px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:8}}/>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:12}}>
+                    {[{k:'calories',l:'Cal'},{k:'protein',l:'Protein'},{k:'carbs',l:'Carbs'},{k:'fat',l:'Fat'}].map(function(f){return(<input key={f.k} type="number" value={suggestForm[f.k]} onChange={function(e){var v=e.target.value;setSuggestForm(function(s){var n=Object.assign({},s);n[f.k]=v;return n;});}} placeholder={f.l} style={{width:'100%',padding:'8px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:13,outline:'none',boxSizing:'border-box',fontFamily:FF,textAlign:'center'}}/>);})}
+                  </div>
+                  <div style={{color:W3,fontSize:11,marginBottom:12,lineHeight:1.5}}>{sw?'Kitaonekana kwako pekee mpaka kikaguliwe.':'Visible only to you until it\'s reviewed.'}</div>
+                  <div style={{display:'flex',gap:8}}>
+                    <button className="bp" disabled={!suggestForm.name_en.trim()||!suggestForm.calories||suggestBusy} onClick={submitSuggestion}>{suggestBusy?(sw?'Inatuma...':'Submitting...'):(sw?'Tuma':'Submit')}</button>
+                    <button className="bg" onClick={function(){setSuggesting(false);}}>{sw?'Ghairi':'Cancel'}</button>
+                  </div>
+                </div>
+              ):(
+                <button className="bg" onClick={function(){setSuggesting(true);}} style={{marginTop:14}}>{sw?"Huoni chakula? Kipendekeze":"Can't find it? Suggest a food"}</button>
+              ))}
             </div>
           )}
           {src==='restaurant'&&(
@@ -730,8 +870,11 @@ function Log(props){
           )}
           {src==='quick'&&(
             <div>
-              <div style={{color:W2,fontSize:12,marginBottom:10,lineHeight:1.5}}>{sw?'Eleza ulichokula, mfano "chapati mbili na chai"':'Describe what you ate, e.g. "2 chapatis and a cup of tea"'}</div>
-              <textarea value={quickText} onChange={function(e){setQuickText(e.target.value);}} autoFocus rows={2} maxLength={500} placeholder={sw?'Andika hapa...':'Type here...'} style={{width:'100%',padding:'11px 13px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:10,resize:'none'}}/>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10,marginBottom:10}}>
+                <div style={{color:W2,fontSize:12,lineHeight:1.5}}>{sw?'Eleza ulichokula, mfano "chapati mbili na chai"':'Describe what you ate, e.g. "2 chapatis and a cup of tea"'}</div>
+                {SpeechRecognitionCtor&&(<button onClick={toggleVoice} aria-label={listening?'Stop voice input':'Start voice input'} style={{flexShrink:0,width:34,height:34,borderRadius:17,background:listening?W:C2,border:'1px solid '+(listening?W:BD),display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}><svg width={14} height={14} viewBox="0 0 14 14" fill="none"><rect x="5" y="1" width="4" height="7" rx="2" stroke={listening?BG:W2} strokeWidth={1.4}/><path d="M2.5 7C2.5 9.5 4.5 11 7 11C9.5 11 11.5 9.5 11.5 7" stroke={listening?BG:W2} strokeWidth={1.4} strokeLinecap="round"/><line x1="7" y1="11" x2="7" y2="13" stroke={listening?BG:W2} strokeWidth={1.4} strokeLinecap="round"/></svg></button>)}
+              </div>
+              <textarea value={quickText} onChange={function(e){setQuickText(e.target.value);}} autoFocus rows={2} maxLength={500} placeholder={listening?(sw?'Inasikiliza...':'Listening...'):(sw?'Andika hapa...':'Type here...')} style={{width:'100%',padding:'11px 13px',background:C2,border:'1px solid '+(listening?BD2:BD),borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:10,resize:'none'}}/>
               <button className="bp" onClick={quickAdd} disabled={!quickText.trim()||quickLoading} style={{marginBottom:12}}>{quickLoading?(sw?'Inachambua...':'Analyzing...'):(sw?'Chambua kwa AI':'Parse with AI')}</button>
               {quickLoading&&(<div style={{height:1,background:C3,overflow:'hidden',position:'relative',borderRadius:1,marginBottom:12}}><div style={{position:'absolute',top:0,left:0,height:'100%',background:W,animation:'scanLine 1.4s ease-in-out infinite',width:'45%',borderRadius:1}}/></div>)}
               {quickError&&<div style={{color:W2,fontSize:13,marginBottom:12}}>{quickError}</div>}
@@ -740,6 +883,26 @@ function Log(props){
             </div>
           )}
           {src==='barcode'&&<BarcodeScan lang={lang} showToast={showToast} onFound={openQty}/>}
+          {src==='saved'&&(
+            <div>
+              {savedMeals.length===0&&<div style={{color:W3,fontSize:13,textAlign:'center',padding:'16px 0'}}>{sw?'Hakuna milo iliyohifadhiwa bado. Hifadhi mlo kutoka kwenye orodha ya leo.':'No saved meals yet. Save one from a meal you\'ve already logged today.'}</div>}
+              {savedMeals.map(function(m,i,arr){
+                var totalE=m.items.reduce(function(a,x){return a+(x.e||0);},0);
+                return(
+                  <div key={m.id}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'11px 0'}}>
+                      <button className="fr" disabled={loggingSaved} onClick={async function(){setLoggingSaved(true);await logSavedMeal(meal,m);showToast(m.name+' added');setAdding(false);setLoggingSaved(false);}} style={{padding:0,flex:1}}>
+                        <div style={{flex:1,marginRight:10}}><div style={{color:W,fontSize:14,fontWeight:500}}>{m.name}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{m.items.length} item{m.items.length!==1?'s':''}</div></div>
+                        <div style={{color:W,fontSize:13,fontWeight:600,flexShrink:0}}>{totalE} kcal</div>
+                      </button>
+                      <button onClick={function(){deleteSavedMeal(m.id);}} aria-label={'Delete '+m.name} style={{background:'none',border:'none',cursor:'pointer',padding:'4px 0 4px 10px',display:'flex',flexShrink:0}}><IcX s={14} c={W3}/></button>
+                    </div>
+                    {i<arr.length-1&&<Sep/>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <div style={{marginTop:16}}><button className="bg" onClick={function(){setAdding(false);setSrc('foods');setSearch('');setRestSearch('');setOpenRest(null);setRestGrp('All');setQuickText('');setQuickItems(null);setQuickError(null);}}>Cancel</button></div>
         </Card>
       ):(
@@ -751,13 +914,14 @@ function Log(props){
 
 // ── SCAN ──────────────────────────────────────────────────
 function Scan(props){
-  var addToLog=props.addToLog,lang=props.lang,showToast=props.showToast;
+  var addToLog=props.addToLog,lang=props.lang,showToast=props.showToast,userId=props.userId;
   var [img,setImg]=useState(null);
   var [loading,setLoading]=useState(false);
   var [result,setResult]=useState(null);
   var [error,setError]=useState(null);
   var [meal,setMeal]=useState('lunch');
   var [done,setDone]=useState(false);
+  var [restaurantName,setRestaurantName]=useState('');
   var ref=useRef();
   var sw=lang==='sw';
   async function analyze(imgData){
@@ -770,13 +934,26 @@ function Scan(props){
       if(data.error)throw new Error(data.error.message||'Analysis failed');
       var txt=data.content.map(function(i){return i.text||'';}).join('');
       setResult(JSON.parse(txt));setLoading(false);
-    }catch(e){setError(e.message&&e.message.indexOf('timed out')>-1?e.message:'Analysis failed. Try a clearer photo.');setLoading(false);}
+    }catch(e){
+      var timedOut=e.message&&e.message.indexOf('timed out')>-1;
+      track('ai_request_failed',{action:'scan',reason:timedOut?'timeout':'error'});
+      setError(timedOut?e.message:'Analysis failed. Try a clearer photo.');setLoading(false);
+    }
   }
   function confirm(){
     if(!result)return;
     addToLog(meal,{n:result.food,s:result.food,e:result.calories,p:result.protein,c:result.carbs,f:result.fat,pr:result.portion,cat:'AI Scan'});
+    // Confirmed scans tagged with a restaurant become candidates for the
+    // restaurant database — once several independent scans of the same
+    // dish there converge on similar values, they're auto-promoted
+    // server-side (see try_promote_restaurant_candidate trigger).
+    if(restaurantName.trim()&&userId){
+      supabase.from('restaurant_scan_candidates').insert({user_id:userId,restaurant_name:restaurantName.trim(),food_name:result.food,calories:result.calories,protein:result.protein,carbs:result.carbs,fat:result.fat}).then(function(res){
+        if(res.error){console.error(res.error);logError('restaurant-candidate-insert',res.error,userId);}
+      });
+    }
     showToast(result.food+' added to '+meal);
-    setDone(true);setTimeout(function(){setImg(null);setResult(null);setDone(false);},1800);
+    setDone(true);setTimeout(function(){setImg(null);setResult(null);setDone(false);setRestaurantName('');},1800);
   }
   return(
     <div className="page" style={{padding:'24px 20px 100px',fontFamily:FF}}>
@@ -803,7 +980,7 @@ function Scan(props){
       {img&&error&&!loading&&!done&&<button className="bp" onClick={function(){analyze(img);}} style={{marginBottom:10}}>Retry Analysis</button>}
       {loading&&(<Card><div style={{color:W2,fontSize:11,letterSpacing:'0.12em',textTransform:'uppercase',marginBottom:12,textAlign:'center'}}>Analyzing your meal</div><div style={{height:1,background:C3,overflow:'hidden',position:'relative',borderRadius:1}}><div style={{position:'absolute',top:0,left:0,height:'100%',background:W,animation:'scanLine 1.4s ease-in-out infinite',width:'45%',borderRadius:1}}/></div></Card>)}
       {error&&<div style={{background:C1,border:'1px solid '+BD2,borderRadius:12,padding:14,color:W2,marginBottom:12,fontSize:13,lineHeight:1.5}}>{error}</div>}
-      {result&&!done&&(<Card><div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:18}}><div style={{flex:1,marginRight:10}}><div style={{color:W,fontSize:17,fontWeight:700,letterSpacing:'-0.02em',lineHeight:1.2}}>{result.food}</div><div style={{color:W2,fontSize:12,marginTop:4}}>{result.portion}{result.budgetKES?' · ~KES '+result.budgetKES:''}</div></div><span style={{background:C2,border:'1px solid '+BD,borderRadius:20,padding:'4px 10px',flexShrink:0,color:W2,fontSize:10,fontWeight:600,letterSpacing:'0.06em',textTransform:'uppercase'}}>{result.confidence}</span></div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:18}}>{[{l:'Calories',v:result.calories,u:'kcal'},{l:'Protein',v:result.protein,u:'g'},{l:'Carbs',v:result.carbs,u:'g'},{l:'Fat',v:result.fat,u:'g'}].map(function(m){return(<div key={m.l} style={{background:C2,border:'1px solid '+BD,borderRadius:10,padding:'12px'}}><Lbl ch={m.l} style={{marginBottom:5}}/><div style={{color:W,fontSize:20,fontWeight:700,letterSpacing:'-0.02em'}}>{m.v}<span style={{fontSize:11,color:W3,fontWeight:400}}> {m.u}</span></div></div>);})}</div>{result.notes&&<div style={{color:W2,fontSize:12,marginBottom:18,lineHeight:1.6}}>{result.notes}</div>}<button className="bp" onClick={confirm}>Add to {meal.charAt(0).toUpperCase()+meal.slice(1)}</button></Card>)}
+      {result&&!done&&(<Card><div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:18}}><div style={{flex:1,marginRight:10}}><div style={{color:W,fontSize:17,fontWeight:700,letterSpacing:'-0.02em',lineHeight:1.2}}>{result.food}</div><div style={{color:W2,fontSize:12,marginTop:4}}>{result.portion}{result.budgetKES?' · ~KES '+result.budgetKES:''}</div></div><span style={{background:C2,border:'1px solid '+BD,borderRadius:20,padding:'4px 10px',flexShrink:0,color:W2,fontSize:10,fontWeight:600,letterSpacing:'0.06em',textTransform:'uppercase'}}>{result.confidence}</span></div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:18}}>{[{l:'Calories',v:result.calories,u:'kcal'},{l:'Protein',v:result.protein,u:'g'},{l:'Carbs',v:result.carbs,u:'g'},{l:'Fat',v:result.fat,u:'g'}].map(function(m){return(<div key={m.l} style={{background:C2,border:'1px solid '+BD,borderRadius:10,padding:'12px'}}><Lbl ch={m.l} style={{marginBottom:5}}/><div style={{color:W,fontSize:20,fontWeight:700,letterSpacing:'-0.02em'}}>{m.v}<span style={{fontSize:11,color:W3,fontWeight:400}}> {m.u}</span></div></div>);})}</div>{result.notes&&<div style={{color:W2,fontSize:12,marginBottom:18,lineHeight:1.6}}>{result.notes}</div>}<input value={restaurantName} onChange={function(e){setRestaurantName(e.target.value);}} placeholder={sw?'Mgahawa (si lazima) — mfano "Java House"':'Restaurant (optional) — e.g. "Java House"'} style={{width:'100%',padding:'10px 12px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:13,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:14}}/><button className="bp" onClick={confirm}>Add to {meal.charAt(0).toUpperCase()+meal.slice(1)}</button></Card>)}
     </div>
   );
 }
@@ -865,17 +1042,21 @@ function Metrics(props){
       var firstW=weights[0],lastW=weights[weights.length-1];
       var days=(new Date(lastW.date)-new Date(firstW.date))/86400000;
       if(days<7){setRecal(null);return;}
-      var deltaWeight=Number(lastW.weight)-Number(firstW.weight);
+      var t0=new Date(firstW.date).getTime();
+      var slope=weightTrendSlope(weights.map(function(w){return{x:(new Date(w.date).getTime()-t0)/86400000,y:Number(w.weight)};}));
+      var deltaWeight=slope*days;
       var avgIntake=loggedDates.reduce(function(a,d){return a+byDate[d];},0)/loggedDates.length;
       var actualMaintenance=Math.round(avgIntake-(deltaWeight*7700)/days);
       var assumedMaintenance=Math.round(calcMaintenance(profile));
       var goalOffset=targetCalories-assumedMaintenance;
       var suggestedCalories=Math.max(1200,Math.round(actualMaintenance+goalOffset));
       if(Math.abs(suggestedCalories-targetCalories)<75){setRecal(null);return;}
+      track('recalibration_shown',{assumedMaintenance:assumedMaintenance,actualMaintenance:actualMaintenance,suggestedCalories:suggestedCalories});
       setRecal({assumedMaintenance:assumedMaintenance,actualMaintenance:actualMaintenance,suggestedCalories:suggestedCalories,days:Math.round(days),loggedDays:loggedDates.length});
     });
   },[userId,profile,targetCalories]);
   async function applyRecal(){
+    track('recalibration_accepted',{suggestedCalories:recal.suggestedCalories});
     var m=macrosFor(profile,recal.suggestedCalories);
     var newTargets={calories:recal.suggestedCalories,protein:m.protein,carbs:m.carbs,fat:m.fat,water:targets.water};
     setTargets(newTargets);
@@ -905,7 +1086,7 @@ function Metrics(props){
           <div><Lbl ch={sw?'Lengo Linalopendekezwa':'Suggested Target'} style={{marginBottom:4}}/><div style={{color:W,fontSize:26,fontWeight:800,letterSpacing:'-0.02em'}}>{recal.suggestedCalories}<span style={{fontSize:13,color:W3,fontWeight:400}}> kcal</span></div></div>
           <div style={{textAlign:'right'}}><Lbl ch={sw?'Sasa':'Current'} style={{marginBottom:4}}/><div style={{color:W3,fontSize:16,fontWeight:600}}>{targets.calories}<span style={{fontSize:12}}> kcal</span></div></div>
         </div>
-        <div style={{display:'flex',gap:8}}><button className="bp" onClick={applyRecal}>{sw?'Sasisha Lengo':'Update My Target'}</button><button className="bg" onClick={function(){setRecal(null);}}>{sw?'Sio Sasa':'Not Now'}</button></div>
+        <div style={{display:'flex',gap:8}}><button className="bp" onClick={applyRecal}>{sw?'Sasisha Lengo':'Update My Target'}</button><button className="bg" onClick={function(){track('recalibration_dismissed');setRecal(null);}}>{sw?'Sio Sasa':'Not Now'}</button></div>
       </Card>)}
       <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:12}}><StatBox label={sw?'Uzito':'Weight'} value={(latest?latest.weight:profile.weight)+''} sub="kg"/><StatBox label={sw?'Mabadiliko':'Change'} value={change!==null?(Number(change)>0?'+':'')+change:'-'} sub="kg total"/><StatBox label="Score" value={score+''} sub="/ 100"/></div>
       {toGoal!==null&&(<Card style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><div><Lbl ch={sw?'Lengo':'Goal Weight'} style={{marginBottom:4}}/><div style={{color:W,fontSize:14,fontWeight:600}}>{profile.targetWeight} kg</div></div><div style={{textAlign:'right'}}><Lbl ch={sw?'Iliyobaki':'To Go'} style={{marginBottom:4}}/><div style={{color:W,fontSize:18,fontWeight:800}}>{Number(toGoal)===0?(sw?'Umefika!':'Reached!'):toGoal+' kg'}</div></div></Card>)}
@@ -965,7 +1146,11 @@ function Profile(props){
       if(data.error)throw new Error(data.error.message||'Plan generation failed');
       var txt=data.content.map(function(i){return i.text||'';}).join('');
       setPlan(JSON.parse(txt));setPlanLoad(false);
-    }catch(e){setPlan({error:true,message:e.message&&e.message.indexOf('timed out')>-1?e.message:null});setPlanLoad(false);}
+    }catch(e){
+      var timedOut=e.message&&e.message.indexOf('timed out')>-1;
+      track('ai_request_failed',{action:'plan',reason:timedOut?'timeout':'error'});
+      setPlan({error:true,message:timedOut?e.message:null});setPlanLoad(false);
+    }
   }
   async function handleChangePassword(){
     if(!userEmail)return;
@@ -1080,6 +1265,7 @@ export default function NutriKenya(){
   var [foods,setFoods]=useState([]);
   var [restaurants,setRestaurants]=useState([]);
   var [recentFoods,setRecentFoods]=useState([]);
+  var [savedMeals,setSavedMeals]=useState([]);
   var [streak,setStreak]=useState(0);
   var [score,setScore]=useState(68);
   var [fasting,setFasting]=useState(false);
@@ -1087,6 +1273,14 @@ export default function NutriKenya(){
   var [toast,setToast]=useState(null);
   var toastTimer=useRef(null);
   var authHandled=useRef(false);
+
+  // No client-side router in this app — tabs are state, not routes — so
+  // screen views need an explicit capture rather than posthog-js's
+  // URL-change autocapture (which is disabled in analytics.js for exactly
+  // this reason).
+  useEffect(function(){
+    if(screen==='app')track('screen_viewed',{screen:tab});
+  },[screen,tab]);
 
   function showToast(msg){if(toastTimer.current)clearTimeout(toastTimer.current);setToast(msg);toastTimer.current=setTimeout(function(){setToast(null);},2200);}
 
@@ -1140,9 +1334,7 @@ export default function NutriKenya(){
     ]).then(function(results){
       var f=results[0].data||[];
       var items=results[1].data||[];
-      setFoods(f.map(function(x){
-        return{id:x.id,n:x.name_en,s:x.name_sw,e:Number(x.calories),p:Number(x.protein),c:Number(x.carbs),f:Number(x.fat),pr:x.portion,cat:x.category};
-      }));
+      setFoods(f.map(mapFoodRow));
       var map={};
       items.forEach(function(x){
         if(!x.restaurants)return;
@@ -1188,10 +1380,14 @@ export default function NutriKenya(){
     var isFirstToday=['breakfast','lunch','dinner','snacks'].every(function(m){return log[m].length===0;});
     setLog(function(l){var n=Object.assign({},l);n[meal]=l[meal].concat([Object.assign({},food,{_k:k,db_id:null})]);return n;});
     pushRecent(food);
+    var method={Restaurant:'restaurant','Quick Add':'quick_add',Barcode:'barcode','AI Scan':'ai_scan',Recent:'recent','Saved Meal':'saved_meal'}[food.cat]||'search';
+    track('food_logged',{method:method,meal:meal});
     setScore(function(s){var ns=Math.min(s+2,100);if(user&&user.id){supabase.from('profiles').update({score:ns}).eq('id',user.id);}return ns;});
     if(isFirstToday){setStreak(function(s){return s+1;});}
     if(!user||!user.id)return;
-    var payload={_k:k,row:{user_id:user.id,date:today(),meal:meal,food_name:food.n,food_name_sw:food.s||food.n,calories:food.e||0,protein:food.p||0,carbs:food.c||0,fat:food.f||0,portion:food.pr||''}};
+    var row={user_id:user.id,date:today(),meal:meal,food_name:food.n,food_name_sw:food.s||food.n,calories:food.e||0,protein:food.p||0,carbs:food.c||0,fat:food.f||0,portion:food.pr||''};
+    MICRO_KEYS.forEach(function(mk){row[mk]=food[mk]!=null?food[mk]:null;});
+    var payload={_k:k,row:row};
     if(!navigator.onLine){queueWrite('food-log-insert',payload);showToast(food.n+" added — will sync when back online");return;}
     try{
       var res=await insertFoodLogRow(payload);
@@ -1202,9 +1398,45 @@ export default function NutriKenya(){
     }
   }
 
+  async function saveMeal(name,items){
+    if(!user||!user.id||items.length===0)return;
+    var slim=items.map(function(i){return{n:i.n,s:i.s,e:i.e,p:i.p,c:i.c,f:i.f,pr:i.pr,cat:i.cat};});
+    var res=await supabase.from('saved_meals').insert({user_id:user.id,name:name,items:slim}).select('*').single();
+    if(res.error){console.error(res.error);logError('saved-meal-insert',res.error,user.id);showToast("Couldn't save meal — try again");return;}
+    setSavedMeals(function(l){return[res.data].concat(l);});
+    track('meal_saved',{item_count:slim.length});
+    showToast('Meal saved');
+  }
+
+  async function deleteSavedMeal(id){
+    setSavedMeals(function(l){return l.filter(function(m){return m.id!==id;});});
+    var res=await supabase.from('saved_meals').delete().eq('id',id);
+    if(res.error){console.error(res.error);logError('saved-meal-delete',res.error,user&&user.id);}
+  }
+
+  async function logSavedMeal(meal,savedMeal){
+    track('saved_meal_logged',{item_count:savedMeal.items.length});
+    for(var i=0;i<savedMeal.items.length;i++){
+      await addToLog(meal,Object.assign({},savedMeal.items[i],{cat:'Saved Meal'}));
+    }
+  }
+
+  async function suggestFood(f){
+    if(!user||!user.id)return null;
+    var row={name_en:f.name_en,name_sw:f.name_sw||f.name_en,calories:f.calories,protein:f.protein,carbs:f.carbs,fat:f.fat,portion:f.portion,category:'Suggested',verified:false,submitted_by:user.id};
+    var res=await supabase.from('foods').insert(row).select('*').single();
+    if(res.error){console.error(res.error);logError('food-suggest',res.error,user.id);showToast("Couldn't submit — try again");return null;}
+    var mapped={id:res.data.id,n:res.data.name_en,s:res.data.name_sw,e:Number(res.data.calories),p:Number(res.data.protein),c:Number(res.data.carbs),f:Number(res.data.fat),pr:res.data.portion,cat:res.data.category};
+    setFoods(function(list){return list.concat([mapped]);});
+    track('food_suggested');
+    showToast('Submitted for review — visible to you until then');
+    return mapped;
+  }
+
   async function handleAuthDone(userData){
     authHandled.current=true;
     setUser(userData);
+    identifyUser(userData.id,{email:userData.email});
     if(userData.id){
       var pRes=await supabase.from('profiles').select('*').eq('id',userData.id).single();
       if(pRes.data){
@@ -1216,7 +1448,7 @@ export default function NutriKenya(){
         setTargets({calories:d.calories,protein:d.protein,carbs:d.carbs,fat:d.fat,water:d.water});
         setScore(typeof d.score==='number'?d.score:68);
         var lRes=await supabase.from('food_logs').select('*').eq('user_id',userData.id).eq('date',today());
-        if(lRes.data&&lRes.data.length>0){var newLog={breakfast:[],lunch:[],dinner:[],snacks:[]};lRes.data.forEach(function(item){var m=item.meal;if(newLog[m]){newLog[m].push({n:item.food_name,s:item.food_name_sw||item.food_name,e:item.calories,p:item.protein,c:item.carbs,f:item.fat,pr:item.portion,cat:'Logged',_k:item.id,db_id:item.id});}});setLog(newLog);}
+        if(lRes.data&&lRes.data.length>0){var newLog={breakfast:[],lunch:[],dinner:[],snacks:[]};lRes.data.forEach(function(item){var m=item.meal;if(newLog[m]){var entry={n:item.food_name,s:item.food_name_sw||item.food_name,e:item.calories,p:item.protein,c:item.carbs,f:item.fat,pr:item.portion,cat:'Logged',_k:item.id,db_id:item.id};MICRO_KEYS.forEach(function(mk){entry[mk]=item[mk]!=null?Number(item[mk]):null;});newLog[m].push(entry);}});setLog(newLog);}
         var datesRes=await supabase.from('food_logs').select('date').eq('user_id',userData.id);
         if(datesRes.data){setStreak(calcStreak(new Set(datesRes.data.map(function(x){return x.date;}))));}
         var recentRes=await supabase.from('food_logs').select('food_name,food_name_sw,calories,protein,carbs,fat,portion').eq('user_id',userData.id).order('created_at',{ascending:false}).limit(40);
@@ -1230,6 +1462,8 @@ export default function NutriKenya(){
         }
         var mRes=await supabase.from('body_metrics').select('*').eq('user_id',userData.id).order('created_at',{ascending:true});
         if(mRes.data&&mRes.data.length>0){setMetrics(mRes.data.map(function(m){return{date:new Date(m.date).toLocaleDateString('en-KE'),weight:m.weight,waist:m.waist,chest:m.chest,hips:m.hips,neck:m.neck};}));}
+        var savedRes=await supabase.from('saved_meals').select('*').eq('user_id',userData.id).order('created_at',{ascending:false});
+        if(savedRes.data){setSavedMeals(savedRes.data);}
         if(d.water_date===today()&&d.water_logged){setWater(d.water_logged);}
         setScreen('app');return;
       }
@@ -1259,6 +1493,7 @@ export default function NutriKenya(){
 
   function reset(){
     supabase.auth.signOut();
+    resetAnalytics();
     setUser(null);setProfile(null);setTargets(null);setScreen('auth');setTab('dashboard');
     setLog({breakfast:[],lunch:[],dinner:[],snacks:[]});setMetrics([]);setWater(0);setScore(68);setStreak(0);setFasting(false);setFStart(null);setRecentFoods([]);
     authHandled.current=false;
@@ -1274,8 +1509,8 @@ export default function NutriKenya(){
       <GS/>
       <div className="scroll-inner" style={{paddingBottom:'calc(68px + env(safe-area-inset-bottom))'}}>
         {tab==='dashboard'&&<Dash profile={profile} targets={targets} log={log} water={water} setWater={setWater} score={score} lang={lang} streak={streak} fasting={fasting} setFasting={setFasting} fStart={fStart} setFStart={setFStart} showToast={showToast} userId={user&&user.id} foods={foods}/>}
-        {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants} recentFoods={recentFoods} addToLog={addToLog}/>}
-        {tab==='scan'&&<Scan addToLog={addToLog} lang={lang} showToast={showToast}/>}
+        {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants} recentFoods={recentFoods} addToLog={addToLog} savedMeals={savedMeals} saveMeal={saveMeal} deleteSavedMeal={deleteSavedMeal} logSavedMeal={logSavedMeal} suggestFood={suggestFood}/>}
+        {tab==='scan'&&<Scan addToLog={addToLog} lang={lang} showToast={showToast} userId={user&&user.id}/>}
         {tab==='metrics'&&<Metrics profile={profile} setProfile={setProfile} targets={targets} setTargets={setTargets} metrics={metrics} setMetrics={setMetrics} score={score} lang={lang} showToast={showToast} userId={user&&user.id}/>}
         {tab==='profile'&&<Profile profile={profile} targets={targets} lang={lang} setLang={setLang} score={score} streak={streak} setScore={setScore} onReset={reset} showToast={showToast} userEmail={user&&user.email} userId={user&&user.id} onLegal={function(doc){setLegalReturn('app');setScreen(doc);}}/>}
       </div>
