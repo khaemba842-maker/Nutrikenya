@@ -11,6 +11,31 @@ const BD='rgba(255,255,255,0.06)',BD2='rgba(255,255,255,0.13)';
 const FF=`-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif`;
 const REST_GROUPS=['All','Fast Food','Kenyan & African','Casual Dining','Grills & Steakhouse','Fine Dining','Modern & Trendy'];
 
+// Coverage is partial by design — populated for the highest-frequency foods
+// first per the "power law of diet" argument, not every row. Missing values
+// stay null rather than a fabricated 0, so the Micronutrients card can tell
+// "none logged" apart from "no data for this food."
+var MICRO_KEYS=['iron_mg','vitamin_a_mcg','vitamin_b12_mcg','folate_mcg','calcium_mg','zinc_mg','vitamin_c_mg','magnesium_mg','potassium_mg','fiber_g','vitamin_d_mcg','vitamin_b6_mg'];
+var MICRO_META=[
+  {k:'iron_mg',l:'Iron',u:'mg',rdi:18},
+  {k:'vitamin_a_mcg',l:'Vitamin A',u:'mcg',rdi:900},
+  {k:'vitamin_b12_mcg',l:'Vitamin B12',u:'mcg',rdi:2.4},
+  {k:'folate_mcg',l:'Folate',u:'mcg',rdi:400},
+  {k:'calcium_mg',l:'Calcium',u:'mg',rdi:1000},
+  {k:'zinc_mg',l:'Zinc',u:'mg',rdi:11},
+  {k:'vitamin_c_mg',l:'Vitamin C',u:'mg',rdi:90},
+  {k:'magnesium_mg',l:'Magnesium',u:'mg',rdi:400},
+  {k:'potassium_mg',l:'Potassium',u:'mg',rdi:3500},
+  {k:'fiber_g',l:'Fiber',u:'g',rdi:30},
+  {k:'vitamin_d_mcg',l:'Vitamin D',u:'mcg',rdi:15},
+  {k:'vitamin_b6_mg',l:'Vitamin B6',u:'mg',rdi:1.3},
+];
+function mapFoodRow(x){
+  var o={id:x.id,n:x.name_en,s:x.name_sw,e:Number(x.calories),p:Number(x.protein),c:Number(x.carbs),f:Number(x.fat),pr:x.portion,cat:x.category};
+  MICRO_KEYS.forEach(function(k){o[k]=x[k]!=null?Number(x[k]):null;});
+  return o;
+}
+
 const QS=[
   {id:'name',q:"What should we call you?",qs:"Jina lako nani?",type:'text',ph:'Your name'},
   {id:'age',q:"How old are you?",qs:"Una miaka mingapi?",type:'number',ph:'25',unit:'years'},
@@ -441,6 +466,10 @@ function Dash(props){
   var all=log.breakfast.concat(log.lunch,log.dinner,log.snacks);
   var tot=all.reduce(function(a,i){return{cal:a.cal+i.e,p:a.p+i.p,c:a.c+i.c,f:a.f+i.f};},{cal:0,p:0,c:0,f:0});
   var rem=Math.max(targets.calories-tot.cal,0);
+  var microTotals=MICRO_META.map(function(m){
+    var logged=all.filter(function(i){return i[m.k]!=null;});
+    return{meta:m,val:logged.reduce(function(a,i){return a+i[m.k];},0),hasData:logged.length>0};
+  }).filter(function(x){return x.hasData;});
   var hr=new Date().getHours();
   var greet=hr<12?'Morning':hr<17?'Afternoon':'Evening';
   var mLbls={breakfast:'Breakfast',lunch:'Lunch',dinner:'Dinner',snacks:'Snacks'};
@@ -466,6 +495,7 @@ function Dash(props){
       </div>
       <Card><div style={{display:'flex',alignItems:'center',gap:20}}><Ring val={tot.cal} max={targets.calories} sz={144} th={11}><div style={{fontSize:24,fontWeight:800,color:W,letterSpacing:'-0.03em'}}>{Math.round(tot.cal)}</div><div style={{color:W3,fontSize:10,letterSpacing:'0.06em',textTransform:'uppercase'}}>eaten</div></Ring><div style={{flex:1}}><Lbl ch={sw?'Zilizobaki':'Remaining'} style={{marginBottom:4}}/><div style={{fontSize:38,fontWeight:900,color:W,letterSpacing:'-0.04em',lineHeight:1}}>{rem}</div><div style={{color:W3,fontSize:12,marginBottom:14}}>of {targets.calories} kcal</div><div style={{height:1,background:BD,marginBottom:10}}/><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>{[{l:'Protein',v:targets.protein+'g'},{l:'Carbs',v:targets.carbs+'g'},{l:'Fat',v:targets.fat+'g'},{l:'Water',v:(targets.water/1000).toFixed(1)+'L'}].map(function(x,i){return(<div key={i}><Lbl ch={x.l} style={{marginBottom:2}}/><div style={{color:W,fontSize:12,fontWeight:600}}>{x.v}</div></div>);})}</div></div></div></Card>
       <Card><Lbl ch={sw?'Virutubisho':'Macronutrients'} style={{marginBottom:18}}/><Bar label={sw?'Protini':'Protein'} val={tot.p} max={targets.protein}/><Bar label={sw?'Wanga':'Carbohydrates'} val={tot.c} max={targets.carbs}/><Bar label={sw?'Mafuta':'Fat'} val={tot.f} max={targets.fat}/><div style={{height:1,background:BD,margin:'16px 0'}}/><Bar label={sw?'Maji':'Water'} val={water} max={targets.water} unit="ml"/><div style={{display:'flex',gap:8,marginTop:12}}>{[250,500].map(function(v){return(<button key={v} className="wb" onClick={function(){handleWater(v);}}>+{v} ml</button>);})}</div></Card>
+      {microTotals.length>0&&(<Card><Lbl ch={sw?'Virutubisho Vidogo':'Micronutrients'} style={{marginBottom:8}}/><div style={{color:W3,fontSize:11,marginBottom:16,lineHeight:1.5}}>{sw?'Kutoka kwa vyakula vilivyo na data — sio milo yote inavyo.':'From foods with data available — not every logged item has this yet.'}</div>{microTotals.map(function(x){return(<Bar key={x.meta.k} label={x.meta.l} val={x.val} max={x.meta.rdi} unit={x.meta.u}/>);})}</Card>)}
       <Card><Lbl ch={sw?'Milo ya Leo':"Today's Meals"} style={{marginBottom:14}}/>{['breakfast','lunch','dinner','snacks'].map(function(m,i,arr){var items=log[m],kcal=items.reduce(function(a,x){return a+x.e;},0);return(<div key={m}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'11px 0'}}><div><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?mLblsSw[m]:mLbls[m]}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{items.length>0?items.length+' item'+(items.length!==1?'s':''):'Empty'}</div></div><div style={{color:kcal>0?W:W3,fontSize:14,fontWeight:600}}>{kcal>0?kcal+' kcal':'—'}</div></div>{i<arr.length-1&&<Sep/>}</div>);})}</Card>
       {highProtein.length>0&&<Card><Lbl ch="Smart Picks — High Protein" style={{marginBottom:12}}/><div style={{color:W2,fontSize:13,marginBottom:12,lineHeight:1.5}}>{Math.round(Math.max(targets.protein-tot.p,0))}g protein left today</div>{highProtein.map(function(f,i,arr){return(<div key={f.id}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 0'}}><div><div style={{color:W,fontSize:13,fontWeight:500}}>{sw?f.s:f.n}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{f.pr}</div></div><div style={{textAlign:'right'}}><div style={{color:W,fontSize:13,fontWeight:600}}>{f.p}g protein</div><div style={{color:W3,fontSize:11}}>{f.e} kcal</div></div></div>{i<arr.length-1&&<Sep/>}</div>);})}</Card>}
       <Card style={{border:'1px solid '+(fasting?BD2:BD)}}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><div><Lbl ch={sw?'Kipindi cha Kufunga':'Fasting Timer'} style={{marginBottom:8}}/><div style={{color:W,fontSize:32,fontWeight:700,letterSpacing:'0.04em',fontVariantNumeric:'tabular-nums'}}>{fmtT(elapsed)}</div><div style={{color:W3,fontSize:11,marginTop:4,letterSpacing:'0.04em',textTransform:'uppercase'}}>{fasting?'Active':'Not active'}</div></div><button className="bp" onClick={function(){setFasting(function(f){if(f){setFStart(null);setElapsed(0);}return!f;});}} style={{width:'auto',padding:'12px 20px',letterSpacing:'0.06em',textTransform:'uppercase',fontSize:12}}>{fasting?'Stop':'Start'}</button></div></Card>
@@ -614,7 +644,7 @@ function Log(props){
       setSearching(true);
       supabase.rpc('search_foods',{q:search}).then(function(res){
         if(res.error){console.error(res.error);logError('food-search',res.error);setSearchResults([]);setSearching(false);return;}
-        var mapped=(res.data||[]).map(function(x){return{id:x.id,n:x.name_en,s:x.name_sw,e:Number(x.calories),p:Number(x.protein),c:Number(x.carbs),f:Number(x.fat),pr:x.portion,cat:x.category};});
+        var mapped=(res.data||[]).map(mapFoodRow);
         setSearchResults(mapped);setSearching(false);
       });
     },250);
@@ -644,13 +674,15 @@ function Log(props){
     if(saved){setSuggesting(false);setSuggestForm({name_en:'',name_sw:'',calories:'',protein:'',carbs:'',fat:'',portion:''});}
   }
   function scaledFood(food,q){
-    return Object.assign({},food,{
+    var scaled=Object.assign({},food,{
       e:Math.round((food.e||0)*q),
       p:Math.round((food.p||0)*q*10)/10,
       c:Math.round((food.c||0)*q*10)/10,
       f:Math.round((food.f||0)*q*10)/10,
       pr:q===1?food.pr:(q+'× '+(food.pr||'serving')),
     });
+    MICRO_KEYS.forEach(function(k){scaled[k]=food[k]!=null?Math.round(food[k]*q*100)/100:null;});
+    return scaled;
   }
   async function rm(key,k){
     var item=log[key].find(function(x){return x._k===k;});
@@ -1269,9 +1301,7 @@ export default function NutriKenya(){
     ]).then(function(results){
       var f=results[0].data||[];
       var items=results[1].data||[];
-      setFoods(f.map(function(x){
-        return{id:x.id,n:x.name_en,s:x.name_sw,e:Number(x.calories),p:Number(x.protein),c:Number(x.carbs),f:Number(x.fat),pr:x.portion,cat:x.category};
-      }));
+      setFoods(f.map(mapFoodRow));
       var map={};
       items.forEach(function(x){
         if(!x.restaurants)return;
@@ -1322,7 +1352,9 @@ export default function NutriKenya(){
     setScore(function(s){var ns=Math.min(s+2,100);if(user&&user.id){supabase.from('profiles').update({score:ns}).eq('id',user.id);}return ns;});
     if(isFirstToday){setStreak(function(s){return s+1;});}
     if(!user||!user.id)return;
-    var payload={_k:k,row:{user_id:user.id,date:today(),meal:meal,food_name:food.n,food_name_sw:food.s||food.n,calories:food.e||0,protein:food.p||0,carbs:food.c||0,fat:food.f||0,portion:food.pr||''}};
+    var row={user_id:user.id,date:today(),meal:meal,food_name:food.n,food_name_sw:food.s||food.n,calories:food.e||0,protein:food.p||0,carbs:food.c||0,fat:food.f||0,portion:food.pr||''};
+    MICRO_KEYS.forEach(function(mk){row[mk]=food[mk]!=null?food[mk]:null;});
+    var payload={_k:k,row:row};
     if(!navigator.onLine){queueWrite('food-log-insert',payload);showToast(food.n+" added — will sync when back online");return;}
     try{
       var res=await insertFoodLogRow(payload);
@@ -1383,7 +1415,7 @@ export default function NutriKenya(){
         setTargets({calories:d.calories,protein:d.protein,carbs:d.carbs,fat:d.fat,water:d.water});
         setScore(typeof d.score==='number'?d.score:68);
         var lRes=await supabase.from('food_logs').select('*').eq('user_id',userData.id).eq('date',today());
-        if(lRes.data&&lRes.data.length>0){var newLog={breakfast:[],lunch:[],dinner:[],snacks:[]};lRes.data.forEach(function(item){var m=item.meal;if(newLog[m]){newLog[m].push({n:item.food_name,s:item.food_name_sw||item.food_name,e:item.calories,p:item.protein,c:item.carbs,f:item.fat,pr:item.portion,cat:'Logged',_k:item.id,db_id:item.id});}});setLog(newLog);}
+        if(lRes.data&&lRes.data.length>0){var newLog={breakfast:[],lunch:[],dinner:[],snacks:[]};lRes.data.forEach(function(item){var m=item.meal;if(newLog[m]){var entry={n:item.food_name,s:item.food_name_sw||item.food_name,e:item.calories,p:item.protein,c:item.carbs,f:item.fat,pr:item.portion,cat:'Logged',_k:item.id,db_id:item.id};MICRO_KEYS.forEach(function(mk){entry[mk]=item[mk]!=null?Number(item[mk]):null;});newLog[m].push(entry);}});setLog(newLog);}
         var datesRes=await supabase.from('food_logs').select('date').eq('user_id',userData.id);
         if(datesRes.data){setStreak(calcStreak(new Set(datesRes.data.map(function(x){return x.date;}))));}
         var recentRes=await supabase.from('food_logs').select('food_name,food_name_sw,calories,protein,carbs,fat,portion').eq('user_id',userData.id).order('created_at',{ascending:false}).limit(40);
