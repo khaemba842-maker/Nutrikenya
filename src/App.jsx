@@ -575,7 +575,10 @@ function BarcodeScan(props){
 }
 
 function Log(props){
-  var log=props.log,setLog=props.setLog,lang=props.lang,showToast=props.showToast,userId=props.userId,foods=props.foods||[],restaurants=props.restaurants||[],recentFoods=props.recentFoods||[],addToLog=props.addToLog;
+  var log=props.log,setLog=props.setLog,lang=props.lang,showToast=props.showToast,userId=props.userId,foods=props.foods||[],restaurants=props.restaurants||[],recentFoods=props.recentFoods||[],addToLog=props.addToLog,savedMeals=props.savedMeals||[],saveMeal=props.saveMeal,deleteSavedMeal=props.deleteSavedMeal,logSavedMeal=props.logSavedMeal;
+  var [savingMeal,setSavingMeal]=useState(false);
+  var [mealName,setMealName]=useState('');
+  var [loggingSaved,setLoggingSaved]=useState(false);
   var [meal,setMeal]=useState('breakfast');
   var [adding,setAdding]=useState(false);
   var [src,setSrc]=useState('foods');
@@ -686,6 +689,17 @@ function Log(props){
         {log[meal].length===0
           ?<div style={{display:'flex',flexDirection:'column',alignItems:'center',padding:'20px 0',gap:8}}><IcPlus s={24} c={C4}/><div style={{color:W3,fontSize:13,letterSpacing:'0.04em'}}>Nothing logged yet</div></div>
           :log[meal].map(function(item,i,arr){return(<div key={item._k||i}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'11px 0'}}><div style={{flex:1,marginRight:12}}><div style={{color:W,fontSize:14,fontWeight:500}}>{sw?item.s:item.n}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{item.pr}</div></div><div style={{display:'flex',alignItems:'center',gap:10}}><div style={{textAlign:'right'}}><div style={{color:W,fontSize:13,fontWeight:600}}>{item.e} kcal</div><div style={{color:W3,fontSize:10,marginTop:2}}>{item.p}P · {item.c}C · {item.f}F</div></div><button onClick={function(){rm(meal,item._k);}} aria-label={'Remove '+item.n} style={{background:'none',border:'none',cursor:'pointer',padding:4,display:'flex'}}><IcX s={14} c={W3}/></button></div></div>{i<arr.length-1&&<Sep/>}</div>);})}
+        {log[meal].length>0&&(savingMeal?(
+          <div style={{marginTop:14}}>
+            <input value={mealName} onChange={function(e){setMealName(e.target.value);}} autoFocus placeholder={sw?'Jina la mlo, mfano "Kifungua Kinywa Changu"':'Meal name, e.g. "My Usual Breakfast"'} style={{width:'100%',padding:'11px 13px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:10}}/>
+            <div style={{display:'flex',gap:8}}>
+              <button className="bp" disabled={!mealName.trim()} onClick={async function(){await saveMeal(mealName.trim(),log[meal]);setSavingMeal(false);setMealName('');}}>{sw?'Hifadhi':'Save'}</button>
+              <button className="bg" onClick={function(){setSavingMeal(false);setMealName('');}}>{sw?'Ghairi':'Cancel'}</button>
+            </div>
+          </div>
+        ):(
+          <button className="bg" onClick={function(){setSavingMeal(true);}} style={{marginTop:14}}>{sw?'+ Hifadhi kama Mlo':'+ Save as Meal'}</button>
+        ))}
       </Card>
       {recentFoods.length>0&&!adding&&!pending&&(
         <Card>
@@ -716,7 +730,7 @@ function Log(props){
       {adding?(
         <Card>
           <div style={{display:'flex',gap:6,marginBottom:16,overflowX:'auto',paddingBottom:2}}>
-            {[{v:'foods',l:sw?'Vyakula':'Foods'},{v:'restaurant',l:sw?'Migahawa':'Restaurants'},{v:'quick',l:sw?'Andika':'Quick Add'},{v:'barcode',l:sw?'Bakoodi':'Barcode'}].map(function(t){var active=src===t.v;return(<button key={t.v} className="pill" onClick={function(){setSrc(t.v);}} style={{border:'1px solid '+(active?W:BD),background:active?W:'transparent',color:active?BG:W2,padding:'7px 12px',flexShrink:0}}>{t.l}</button>);})}
+            {[{v:'foods',l:sw?'Vyakula':'Foods'},{v:'restaurant',l:sw?'Migahawa':'Restaurants'},{v:'quick',l:sw?'Andika':'Quick Add'},{v:'barcode',l:sw?'Bakoodi':'Barcode'},{v:'saved',l:sw?'Milo Iliyohifadhiwa':'Saved Meals'}].map(function(t){var active=src===t.v;return(<button key={t.v} className="pill" onClick={function(){setSrc(t.v);}} style={{border:'1px solid '+(active?W:BD),background:active?W:'transparent',color:active?BG:W2,padding:'7px 12px',flexShrink:0}}>{t.l}</button>);})}
           </div>
           {src==='foods'&&(
             <div>
@@ -785,6 +799,26 @@ function Log(props){
             </div>
           )}
           {src==='barcode'&&<BarcodeScan lang={lang} showToast={showToast} onFound={openQty}/>}
+          {src==='saved'&&(
+            <div>
+              {savedMeals.length===0&&<div style={{color:W3,fontSize:13,textAlign:'center',padding:'16px 0'}}>{sw?'Hakuna milo iliyohifadhiwa bado. Hifadhi mlo kutoka kwenye orodha ya leo.':'No saved meals yet. Save one from a meal you\'ve already logged today.'}</div>}
+              {savedMeals.map(function(m,i,arr){
+                var totalE=m.items.reduce(function(a,x){return a+(x.e||0);},0);
+                return(
+                  <div key={m.id}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'11px 0'}}>
+                      <button className="fr" disabled={loggingSaved} onClick={async function(){setLoggingSaved(true);await logSavedMeal(meal,m);showToast(m.name+' added');setAdding(false);setLoggingSaved(false);}} style={{padding:0,flex:1}}>
+                        <div style={{flex:1,marginRight:10}}><div style={{color:W,fontSize:14,fontWeight:500}}>{m.name}</div><div style={{color:W3,fontSize:11,marginTop:2}}>{m.items.length} item{m.items.length!==1?'s':''}</div></div>
+                        <div style={{color:W,fontSize:13,fontWeight:600,flexShrink:0}}>{totalE} kcal</div>
+                      </button>
+                      <button onClick={function(){deleteSavedMeal(m.id);}} aria-label={'Delete '+m.name} style={{background:'none',border:'none',cursor:'pointer',padding:'4px 0 4px 10px',display:'flex',flexShrink:0}}><IcX s={14} c={W3}/></button>
+                    </div>
+                    {i<arr.length-1&&<Sep/>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <div style={{marginTop:16}}><button className="bg" onClick={function(){setAdding(false);setSrc('foods');setSearch('');setRestSearch('');setOpenRest(null);setRestGrp('All');setQuickText('');setQuickItems(null);setQuickError(null);}}>Cancel</button></div>
         </Card>
       ):(
@@ -1137,6 +1171,7 @@ export default function NutriKenya(){
   var [foods,setFoods]=useState([]);
   var [restaurants,setRestaurants]=useState([]);
   var [recentFoods,setRecentFoods]=useState([]);
+  var [savedMeals,setSavedMeals]=useState([]);
   var [streak,setStreak]=useState(0);
   var [score,setScore]=useState(68);
   var [fasting,setFasting]=useState(false);
@@ -1253,7 +1288,7 @@ export default function NutriKenya(){
     var isFirstToday=['breakfast','lunch','dinner','snacks'].every(function(m){return log[m].length===0;});
     setLog(function(l){var n=Object.assign({},l);n[meal]=l[meal].concat([Object.assign({},food,{_k:k,db_id:null})]);return n;});
     pushRecent(food);
-    var method={Restaurant:'restaurant','Quick Add':'quick_add',Barcode:'barcode','AI Scan':'ai_scan',Recent:'recent'}[food.cat]||'search';
+    var method={Restaurant:'restaurant','Quick Add':'quick_add',Barcode:'barcode','AI Scan':'ai_scan',Recent:'recent','Saved Meal':'saved_meal'}[food.cat]||'search';
     track('food_logged',{method:method,meal:meal});
     setScore(function(s){var ns=Math.min(s+2,100);if(user&&user.id){supabase.from('profiles').update({score:ns}).eq('id',user.id);}return ns;});
     if(isFirstToday){setStreak(function(s){return s+1;});}
@@ -1266,6 +1301,29 @@ export default function NutriKenya(){
     }catch(e){
       console.error(e);logError('food-log-insert',e,user.id);
       queueWrite('food-log-insert',payload);
+    }
+  }
+
+  async function saveMeal(name,items){
+    if(!user||!user.id||items.length===0)return;
+    var slim=items.map(function(i){return{n:i.n,s:i.s,e:i.e,p:i.p,c:i.c,f:i.f,pr:i.pr,cat:i.cat};});
+    var res=await supabase.from('saved_meals').insert({user_id:user.id,name:name,items:slim}).select('*').single();
+    if(res.error){console.error(res.error);logError('saved-meal-insert',res.error,user.id);showToast("Couldn't save meal — try again");return;}
+    setSavedMeals(function(l){return[res.data].concat(l);});
+    track('meal_saved',{item_count:slim.length});
+    showToast('Meal saved');
+  }
+
+  async function deleteSavedMeal(id){
+    setSavedMeals(function(l){return l.filter(function(m){return m.id!==id;});});
+    var res=await supabase.from('saved_meals').delete().eq('id',id);
+    if(res.error){console.error(res.error);logError('saved-meal-delete',res.error,user&&user.id);}
+  }
+
+  async function logSavedMeal(meal,savedMeal){
+    track('saved_meal_logged',{item_count:savedMeal.items.length});
+    for(var i=0;i<savedMeal.items.length;i++){
+      await addToLog(meal,Object.assign({},savedMeal.items[i],{cat:'Saved Meal'}));
     }
   }
 
@@ -1298,6 +1356,8 @@ export default function NutriKenya(){
         }
         var mRes=await supabase.from('body_metrics').select('*').eq('user_id',userData.id).order('created_at',{ascending:true});
         if(mRes.data&&mRes.data.length>0){setMetrics(mRes.data.map(function(m){return{date:new Date(m.date).toLocaleDateString('en-KE'),weight:m.weight,waist:m.waist,chest:m.chest,hips:m.hips,neck:m.neck};}));}
+        var savedRes=await supabase.from('saved_meals').select('*').eq('user_id',userData.id).order('created_at',{ascending:false});
+        if(savedRes.data){setSavedMeals(savedRes.data);}
         if(d.water_date===today()&&d.water_logged){setWater(d.water_logged);}
         setScreen('app');return;
       }
@@ -1343,7 +1403,7 @@ export default function NutriKenya(){
       <GS/>
       <div className="scroll-inner" style={{paddingBottom:'calc(68px + env(safe-area-inset-bottom))'}}>
         {tab==='dashboard'&&<Dash profile={profile} targets={targets} log={log} water={water} setWater={setWater} score={score} lang={lang} streak={streak} fasting={fasting} setFasting={setFasting} fStart={fStart} setFStart={setFStart} showToast={showToast} userId={user&&user.id} foods={foods}/>}
-        {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants} recentFoods={recentFoods} addToLog={addToLog}/>}
+        {tab==='log'&&<Log log={log} setLog={setLog} lang={lang} showToast={showToast} userId={user&&user.id} foods={foods} restaurants={restaurants} recentFoods={recentFoods} addToLog={addToLog} savedMeals={savedMeals} saveMeal={saveMeal} deleteSavedMeal={deleteSavedMeal} logSavedMeal={logSavedMeal}/>}
         {tab==='scan'&&<Scan addToLog={addToLog} lang={lang} showToast={showToast}/>}
         {tab==='metrics'&&<Metrics profile={profile} setProfile={setProfile} targets={targets} setTargets={setTargets} metrics={metrics} setMetrics={setMetrics} score={score} lang={lang} showToast={showToast} userId={user&&user.id}/>}
         {tab==='profile'&&<Profile profile={profile} targets={targets} lang={lang} setLang={setLang} score={score} streak={streak} setScore={setScore} onReset={reset} showToast={showToast} userEmail={user&&user.email} userId={user&&user.id} onLegal={function(doc){setLegalReturn('app');setScreen(doc);}}/>}
