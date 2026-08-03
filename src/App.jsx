@@ -612,6 +612,26 @@ function Log(props){
   var [suggesting,setSuggesting]=useState(false);
   var [suggestForm,setSuggestForm]=useState({name_en:'',name_sw:'',calories:'',protein:'',carbs:'',fat:'',portion:''});
   var [suggestBusy,setSuggestBusy]=useState(false);
+  var [listening,setListening]=useState(false);
+  var recognitionRef=useRef(null);
+  var SpeechRecognitionCtor=typeof window!=='undefined'?(window.SpeechRecognition||window.webkitSpeechRecognition):null;
+  function toggleVoice(){
+    if(!SpeechRecognitionCtor)return;
+    if(listening){recognitionRef.current&&recognitionRef.current.stop();return;}
+    var rec=new SpeechRecognitionCtor();
+    rec.lang=lang==='sw'?'sw-KE':'en-KE';
+    rec.interimResults=false;
+    rec.maxAlternatives=1;
+    rec.onresult=function(e){
+      var transcript=e.results[0][0].transcript;
+      setQuickText(function(t){return(t?t+' ':'')+transcript;});
+    };
+    rec.onerror=function(){setListening(false);showToast(sw?'Sauti haikutambulika. Jaribu tena.':'Could not hear that. Try again.');};
+    rec.onend=function(){setListening(false);};
+    recognitionRef.current=rec;
+    setListening(true);
+    rec.start();
+  }
   var [meal,setMeal]=useState('breakfast');
   var [adding,setAdding]=useState(false);
   var [src,setSrc]=useState('foods');
@@ -850,8 +870,11 @@ function Log(props){
           )}
           {src==='quick'&&(
             <div>
-              <div style={{color:W2,fontSize:12,marginBottom:10,lineHeight:1.5}}>{sw?'Eleza ulichokula, mfano "chapati mbili na chai"':'Describe what you ate, e.g. "2 chapatis and a cup of tea"'}</div>
-              <textarea value={quickText} onChange={function(e){setQuickText(e.target.value);}} autoFocus rows={2} maxLength={500} placeholder={sw?'Andika hapa...':'Type here...'} style={{width:'100%',padding:'11px 13px',background:C2,border:'1px solid '+BD,borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:10,resize:'none'}}/>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:10,marginBottom:10}}>
+                <div style={{color:W2,fontSize:12,lineHeight:1.5}}>{sw?'Eleza ulichokula, mfano "chapati mbili na chai"':'Describe what you ate, e.g. "2 chapatis and a cup of tea"'}</div>
+                {SpeechRecognitionCtor&&(<button onClick={toggleVoice} aria-label={listening?'Stop voice input':'Start voice input'} style={{flexShrink:0,width:34,height:34,borderRadius:17,background:listening?W:C2,border:'1px solid '+(listening?W:BD),display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}><svg width={14} height={14} viewBox="0 0 14 14" fill="none"><rect x="5" y="1" width="4" height="7" rx="2" stroke={listening?BG:W2} strokeWidth={1.4}/><path d="M2.5 7C2.5 9.5 4.5 11 7 11C9.5 11 11.5 9.5 11.5 7" stroke={listening?BG:W2} strokeWidth={1.4} strokeLinecap="round"/><line x1="7" y1="11" x2="7" y2="13" stroke={listening?BG:W2} strokeWidth={1.4} strokeLinecap="round"/></svg></button>)}
+              </div>
+              <textarea value={quickText} onChange={function(e){setQuickText(e.target.value);}} autoFocus rows={2} maxLength={500} placeholder={listening?(sw?'Inasikiliza...':'Listening...'):(sw?'Andika hapa...':'Type here...')} style={{width:'100%',padding:'11px 13px',background:C2,border:'1px solid '+(listening?BD2:BD),borderRadius:8,color:W,fontSize:14,outline:'none',boxSizing:'border-box',fontFamily:FF,marginBottom:10,resize:'none'}}/>
               <button className="bp" onClick={quickAdd} disabled={!quickText.trim()||quickLoading} style={{marginBottom:12}}>{quickLoading?(sw?'Inachambua...':'Analyzing...'):(sw?'Chambua kwa AI':'Parse with AI')}</button>
               {quickLoading&&(<div style={{height:1,background:C3,overflow:'hidden',position:'relative',borderRadius:1,marginBottom:12}}><div style={{position:'absolute',top:0,left:0,height:'100%',background:W,animation:'scanLine 1.4s ease-in-out infinite',width:'45%',borderRadius:1}}/></div>)}
               {quickError&&<div style={{color:W2,fontSize:13,marginBottom:12}}>{quickError}</div>}
